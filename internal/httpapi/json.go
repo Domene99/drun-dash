@@ -24,3 +24,11 @@ func WriteCreated(w http.ResponseWriter, v any) {
 func WriteAccepted(w http.ResponseWriter, v any) {
 	_ = httpx.WriteJSON(w, http.StatusAccepted, v)
 }
+
+// WriteNoContent writes a bare 204 No Content, for endpoints that acknowledge a
+// successful mutation with no response body (deleteAgent). It writes only the
+// status line — no Content-Type and no body — matching the contract's empty 204
+// response.
+func WriteNoContent(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusNoContent)
+}

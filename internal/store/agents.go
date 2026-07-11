@@ -112,3 +112,33 @@ func (s *AgentStore) SetCurrentVersion(ctx context.Context, id string, version i
 	}
 	return agent, nil
 }
+
+// Update sets the name and description on the agent with the given id, bumps
+// updated_at, and returns the updated row. It returns [ErrNotFound] if no such
+// agent exists. A nil description stores NULL. A rename that collides with an
+// existing (org_id, name) yields [ErrConflict]. Callers realise the API's
+// partial (PATCH) semantics by passing the agent's current values for the
+// fields a request omits.
+func (s *AgentStore) Update(ctx context.Context, id, name string, description *string) (Agent, error) {
+	const q = `UPDATE agents SET name = $2, description = $3, updated_at = now() WHERE id = $1 RETURNING ` + agentColumns
+	agent, err := scanAgent(s.db.QueryRow(ctx, q, id, name, description))
+	if err != nil {
+		return Agent{}, fmt.Errorf("store: update agent %q: %w", id, mapError(err))
+	}
+	return agent, nil
+}
+
+// Delete removes the agent with the given id. It returns [ErrNotFound] if no
+// such agent exists. The agent's versions and entitlements are removed with it
+// by the schema's ON DELETE CASCADE (migration 000004).
+func (s *AgentStore) Delete(ctx context.Context, id string) error {
+	const q = `DELETE FROM agents WHERE id = $1`
+	tag, err := s.db.Exec(ctx, q, id)
+	if err != nil {
+		return fmt.Errorf("store: delete agent %q: %w", id, mapError(err))
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("store: delete agent %q: %w", id, ErrNotFound)
+	}
+	return nil
+}

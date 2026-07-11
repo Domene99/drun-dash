@@ -101,6 +101,12 @@ func Mount(r chi.Router, deps Deps) {
 		pr.Get("/agents", deps.listAgents)
 		pr.Post("/agents", deps.createAgent)
 		pr.Get("/agents/{agentId}", deps.getAgent)
+		pr.Patch("/agents/{agentId}", deps.updateAgent)
+		pr.Delete("/agents/{agentId}", deps.deleteAgent)
+		pr.Get("/agents/{agentId}/versions", deps.listAgentVersions)
+		pr.Post("/agents/{agentId}/versions", deps.publishAgentVersion)
+		pr.Get("/agents/{agentId}/entitlements", deps.listAgentEntitlements)
+		pr.Put("/agents/{agentId}/entitlements", deps.setAgentEntitlements)
 
 		pr.Get("/policies", deps.listPolicies)
 		pr.Post("/policies", deps.createPolicy)
