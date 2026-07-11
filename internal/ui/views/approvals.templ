@@ -1,0 +1,112 @@
+package views
+
+// ApprovalsData is the view model for the Approvals page: the escalation queue.
+// Pending items render an approve/deny action; already-decided items render
+// read-only.
+type ApprovalsData struct {
+	// Error, when non-empty, replaces the table with a readable message.
+	Error string
+	// Approvals is the resolved list of queue rows.
+	Approvals []ApprovalRow
+}
+
+// ApprovalRow is one row of the approvals table. Pending controls whether the
+// decision action is offered; RowError carries a per-row message surfaced after
+// a failed decision POST so a single failure does not blank the page.
+type ApprovalRow struct {
+	ID        string
+	Session   string
+	Action    string
+	Reason    string
+	Status    string
+	DecidedBy string
+	Created   string
+	Pending   bool
+	RowError  string
+}
+
+// Approvals renders the escalation queue. Each row is emitted by
+// [ApprovalRowTr] so the same markup serves both the initial table and the
+// HTMX row-swap after a decision.
+templ Approvals(data ApprovalsData) {
+	@Layout("Approvals") {
+		<section class="card">
+			<h1>Approvals</h1>
+			if data.Error != "" {
+				<p class="error" role="alert">{ data.Error }</p>
+			} else if len(data.Approvals) == 0 {
+				<p class="muted">No approval requests.</p>
+			} else {
+				<table>
+					<thead>
+						<tr>
+							<th>Approval</th>
+							<th>Session</th>
+							<th>Action</th>
+							<th>Reason</th>
+							<th>Status</th>
+							<th>Decided by</th>
+							<th>Created</th>
+							<th>Decision</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, a := range data.Approvals {
+							@ApprovalRowTr(a)
+						}
+					</tbody>
+				</table>
+			}
+		</section>
+	}
+}
+
+// ApprovalRowTr renders a single approvals table row. A pending row offers
+// approve/deny buttons that HTMX-POST to the UI decision handler and swap this
+// same <tr> (outerHTML) with the re-rendered result; a decided row is read-only.
+// The stable id lets the swap target the row precisely.
+templ ApprovalRowTr(row ApprovalRow) {
+	<tr id={ "approval-" + row.ID }>
+		<td>{ row.ID }</td>
+		<td>{ row.Session }</td>
+		<td>{ row.Action }</td>
+		<td>{ row.Reason }</td>
+		<td>{ row.Status }</td>
+		<td>{ orDash(row.DecidedBy) }</td>
+		<td>{ row.Created }</td>
+		<td>
+			if row.RowError != "" {
+				<span class="error" role="alert">{ row.RowError }</span>
+			} else if row.Pending {
+				<div class="row-actions">
+					<button
+						type="button"
+						hx-post={ "/approvals/" + row.ID + "/decision" }
+						hx-vals={ `{"decision":"approve"}` }
+						hx-target="closest tr"
+						hx-swap="outerHTML"
+					>Approve</button>
+					<button
+						type="button"
+						class="deny"
+						hx-post={ "/approvals/" + row.ID + "/decision" }
+						hx-vals={ `{"decision":"deny"}` }
+						hx-target="closest tr"
+						hx-swap="outerHTML"
+					>Deny</button>
+				</div>
+			} else {
+				<span class="muted">—</span>
+			}
+		</td>
+	</tr>
+}
+
+// orDash renders an em dash for an empty string, keeping decided-by columns
+// tidy when a request has not been decided.
+func orDash(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
+}

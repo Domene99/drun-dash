@@ -11,6 +11,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -60,10 +61,10 @@ func (e *APIError) Error() string {
 	}
 }
 
-// Client is a tiny read-only control-plane API client. It performs the handful
-// of GET calls the dashboard needs, sending the caller's session token as a
-// Bearer credential and decoding either the typed success body or the flat
-// Error envelope. Construct it with [NewClient]; the zero value is not usable.
+// Client is a tiny control-plane API client. It performs the handful of calls
+// the dashboard needs, sending the caller's session token as a Bearer
+// credential and decoding either the typed success body or the flat Error
+// envelope. Construct it with [NewClient]; the zero value is not usable.
 type Client struct {
 	baseURL string
 	hc      *http.Client
@@ -144,6 +145,41 @@ type SpendReport struct {
 	Groups   []SpendGroup `json:"groups"`
 }
 
+// Budget mirrors the Budget schema: a configured spend ceiling for a period and
+// how much of it has been consumed so far.
+type Budget struct {
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	Limit    float64 `json:"limit"`
+	Spent    float64 `json:"spent"`
+	Currency string  `json:"currency"`
+	Period   string  `json:"period"`
+}
+
+// BudgetList mirrors the BudgetList schema.
+type BudgetList struct {
+	Items []Budget `json:"items"`
+}
+
+// Approval mirrors the Approval schema: one entry in the escalation queue. The
+// decided_by / decided_at fields are populated only once a decision is made.
+type Approval struct {
+	ID        string `json:"id"`
+	SessionID string `json:"session_id"`
+	Action    string `json:"action"`
+	Reason    string `json:"reason,omitempty"`
+	Status    string `json:"status"`
+	DecidedBy string `json:"decided_by,omitempty"`
+	DecidedAt string `json:"decided_at,omitempty"`
+	CreatedAt string `json:"created_at"`
+}
+
+// ApprovalList mirrors the ApprovalList schema.
+type ApprovalList struct {
+	Items      []Approval `json:"items"`
+	NextCursor string     `json:"next_cursor,omitempty"`
+}
+
 // Whoami calls GET /auth/whoami and returns the authenticated identity.
 func (c *Client) Whoami(ctx context.Context, token string) (*Identity, error) {
 	var id Identity
@@ -193,6 +229,46 @@ func (c *Client) QuerySpend(ctx context.Context, token, from, to, groupBy string
 	return &report, nil
 }
 
+// ListBudgets calls GET /analytics/budgets and returns the configured budgets
+// with their current utilization (spent versus limit).
+func (c *Client) ListBudgets(ctx context.Context, token string) (*BudgetList, error) {
+	var list BudgetList
+	if err := c.getJSON(ctx, token, "/analytics/budgets", nil, &list); err != nil {
+		return nil, err
+	}
+	return &list, nil
+}
+
+// ListApprovals calls GET /approvals, optionally filtered by status (an empty
+// status returns every state). It backs the admin UI approval inbox.
+func (c *Client) ListApprovals(ctx context.Context, token, status string) (*ApprovalList, error) {
+	q := url.Values{}
+	if status != "" {
+		q.Set("status", status)
+	}
+	var list ApprovalList
+	if err := c.getJSON(ctx, token, "/approvals", q, &list); err != nil {
+		return nil, err
+	}
+	return &list, nil
+}
+
+// DecideApproval calls POST /approvals/{id}/decision to approve or deny a queued
+// escalation. decision must be "approve" or "deny"; reason is an optional
+// rationale recorded in the audit trail. It returns the updated approval.
+func (c *Client) DecideApproval(ctx context.Context, token, id, decision, reason string) (*Approval, error) {
+	body := struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason,omitempty"`
+	}{Decision: decision, Reason: reason}
+	var approval Approval
+	path := "/approvals/" + url.PathEscape(id) + "/decision"
+	if err := c.postJSON(ctx, token, path, body, &approval); err != nil {
+		return nil, err
+	}
+	return &approval, nil
+}
+
 // getJSON issues an authenticated GET to path (with optional query params) and
 // decodes a 200 body into dst. A 401 maps to [ErrUnauthorized]; any other
 // non-200 maps to an [*APIError] carrying the flat Error envelope when present.
@@ -209,6 +285,31 @@ func (c *Client) getJSON(ctx context.Context, token, path string, query url.Valu
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
 
+	return c.do(req, path, dst)
+}
+
+// postJSON issues an authenticated POST to path with a JSON request body and
+// decodes a 200 body into dst. Status mapping mirrors [Client.getJSON]: 401
+// maps to [ErrUnauthorized]; any other non-200 maps to an [*APIError].
+func (c *Client) postJSON(ctx context.Context, token, path string, reqBody, dst any) error {
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	return c.do(req, path, dst)
+}
+
+// do performs req, reads a bounded response body, and decodes a 200 into dst.
+// It centralizes the status-to-error mapping shared by getJSON and postJSON.
+func (c *Client) do(req *http.Request, path string, dst any) error {
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return err

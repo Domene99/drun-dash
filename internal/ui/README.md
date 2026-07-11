@@ -3,30 +3,34 @@
 Server-rendered admin web app for drun-dash — **Go + [templ](https://templ.guide) + [HTMX](https://htmx.org)**.
 
 This package is the guts of the `admin-ui` binary (`cmd/admin-ui`). It renders a
-base layout, a login page, and a dashboard that reads **live data** from the
-control-plane REST API. It is a deliberately bounded shell: it establishes the
-binary, the templ+HTMX toolchain, and the API-client pattern. Broader
-functionality lands in later batches.
+base layout, a login page, a dashboard, and the **governance pages** — Sessions,
+Spend, and Approvals — all reading **live data** from the control-plane REST
+API. It is fully decoupled from the control plane: it talks to it only over
+HTTP.
 
 ## Design
 
 The admin UI is a **separate binary** from the control plane and **does not
-import control-plane packages**. It is fully decoupled: it talks to the control
-plane over HTTP through `Client` (`client.go`), hitting the existing REST
-endpoints (`/auth/whoami`, `/agents`, `/sessions`, `/analytics/spend`).
+import control-plane packages**. It talks to the control plane over HTTP through
+`Client` (`client.go`), hitting the existing REST endpoints (`/auth/whoami`,
+`/agents`, `/sessions`, `/analytics/spend`, `/analytics/budgets`, `/approvals`,
+`/approvals/{id}/decision`).
 
 ```
 cmd/admin-ui/main.go
   └─ ui.New(client, logger)          server.go   chi router + auth middleware
        ├─ views.Layout/Login/Dashboard/Summary   (templ)   presentation only
+       ├─ views.Sessions/Spend/Approvals          (templ)   governance pages
        └─ ui.Client ── HTTP ──▶ control-plane REST API
 ```
 
-- **`client.go`** — a tiny read-only control-plane client. Each call sends the
-  operator's session token as `Authorization: Bearer …`, decodes the typed
-  success body, and is aware of the flat `Error` envelope (`{code, message}`,
-  per ADR-0002). A `401` maps to the `ErrUnauthorized` sentinel; other non-2xx
-  responses map to `*APIError`.
+- **`client.go`** — a tiny control-plane client. Each call sends the operator's
+  session token as `Authorization: Bearer …`, decodes the typed success body,
+  and is aware of the flat `Error` envelope (`{code, message}`, per ADR-0002). A
+  `401` maps to the `ErrUnauthorized` sentinel; other non-2xx responses map to
+  `*APIError`. Read helpers: `Whoami`, `ListAgents`, `ListSessions`,
+  `QuerySpend`, `ListBudgets`, `ListApprovals`. Write helper: `DecideApproval`
+  (`POST /approvals/{id}/decision`).
 - **`server.go`** — a `chi` router and the request handlers. Routes:
   - `GET /healthz` — static liveness probe.
   - `GET /login` — render the sign-in form.
@@ -34,15 +38,40 @@ cmd/admin-ui/main.go
   - `POST /logout` — clear the cookie, redirect to `/login`.
   - `GET /` — the dashboard (behind auth middleware).
   - `GET /fragments/summary` — the HTMX-refreshed live-overview fragment.
+  - `GET /sessions` — the Sessions page (flight recorder).
+  - `GET /spend` — the Spend page (finance view): total, per-group breakdown, and
+    budget utilization.
+  - `GET /approvals` — the Approvals inbox.
+  - `POST /approvals/{id}/decision` — the HTMX approve/deny action; the handler
+    calls `DecideApproval` and re-renders just the affected row.
   The auth middleware redirects to `/login` whenever the session cookie is
   absent, and clears a stale cookie when the control plane rejects the token.
 - **`views/`** — the templ components (`*.templ`) and their generated
   (`*_templ.go`) Go. Views are pure presentation and receive fully-resolved
   view models built by `server.go`.
 
-HTMX is loaded from a CDN `<script>` in the layout and drives the dashboard's
-summary fragment, which polls `GET /fragments/summary` every 30s and also has a
-manual **Refresh** button.
+### Governance pages
+
+- **Sessions** (`views/sessions.templ`) — a table of governed sessions: id,
+  agent, status, created, and fan-out ceiling. Full-page GET.
+- **Spend** (`views/spend.templ`) — the finance view: total spend over the fixed
+  window plus a per-agent breakdown, and a budgets table showing spent vs limit
+  and utilization (a budget at/over its limit is flagged). The spend and budgets
+  sections fail independently, so one degraded endpoint does not hide the other.
+- **Approvals** (`views/approvals.templ`) — the escalation queue. Pending items
+  render **Approve** / **Deny** buttons that HTMX-`POST` to
+  `/approvals/{id}/decision` and swap the single `<tr>` (outerHTML) with the
+  re-rendered result; already-decided items are read-only. A failed decision
+  (for example a `409` on an already-decided request) is surfaced inside the row
+  rather than blanking the page.
+
+Server-rendered throughout: full-page GETs for the tables, HTMX only for the
+summary refresh and the approve/deny row-swap. No client-side state framework.
+
+**Error handling.** Every page fetches server-side. A rejected token
+(`ErrUnauthorized`) clears the cookie and redirects to `/login` (via
+`HX-Redirect` for HTMX requests); any other control-plane error is rendered as a
+readable inline message, never a blank page.
 
 ## Auth (v1, bounded)
 
@@ -83,6 +112,7 @@ Never hand-edit `*_templ.go` — change the `.templ` source and regenerate.
 ## Tests
 
 `client_test.go` and `server_test.go` use `httptest`: the client is exercised
-against a mock control-plane server; the server is driven with recorded
-requests to assert the redirect-when-unauthenticated, cookie-on-login, and
-dashboard-renders-from-live-data behaviors.
+against a mock control-plane server; the server is driven with recorded requests
+to assert the redirect-when-unauthenticated, cookie-on-login, and
+render-from-live-data behaviors for every page, plus the approve/deny action
+(POST → `DecideApproval` → row re-render) and readable error surfacing.
