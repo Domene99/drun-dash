@@ -1,0 +1,1644 @@
+openapi: 3.1.0
+info:
+  title: drun-dash Control Plane API
+  version: 1.0.0
+  summary: Enterprise control plane for governing drun agent sessions.
+  description: |
+    Contract for the drun-dash control plane REST API (v1).
+
+    The control plane governs autonomous agent sessions: it holds the agent
+    catalog, versioned policy boundaries, launches governed sessions (handing
+    back a signed policy bundle plus scoped LLM-proxy credentials), ingests
+    trajectory telemetry, drives the human approval/escalation queue, and
+    answers spend/budget analytics queries.
+
+    Consumers of this API:
+      * `drun-dash` CLI (Go) — authenticates via OAuth 2.0 device flow.
+      * Admin UI server (Go + templ) — authenticates via OIDC session, then
+        calls this API server-side with a Bearer JWT.
+      * LLM proxy — a separate process that shares the auth/grant model; it
+        validates the `proxy_token` minted at session launch.
+
+    Status of this document: this is a **contract skeleton**. Operations are
+    fully described with request/response schemas, but the reference server is
+    not implemented — unimplemented operations return `501 Not Implemented`.
+
+    See `openapi/README.md` for the versioning policy and lint command.
+  license:
+    name: See repository LICENSE
+    url: https://github.com/Domene99/drun-dash/blob/main/LICENSE
+  contact:
+    name: drun-dash maintainers
+    url: https://github.com/Domene99/drun-dash
+
+servers:
+  - url: https://api.drun-dash.example.com/v1
+    description: Production control plane.
+  - url: https://api.staging.drun-dash.example.com/v1
+    description: Staging control plane.
+  - url: http://localhost:8080/v1
+    description: Local development.
+
+tags:
+  - name: Auth
+    description: >-
+      Device authorization flow for the CLI and OIDC session exchange for the
+      admin UI. Issues the Bearer JWTs used everywhere else.
+  - name: Agents
+    description: >-
+      Agent catalog CRUD, immutable versions, and per-org entitlements.
+  - name: Policies
+    description: >-
+      Versioned policy boundaries and their signing metadata.
+  - name: Sessions
+    description: >-
+      Launching and managing governed agent sessions. Launch returns the
+      policy bundle plus scoped LLM-proxy credentials.
+  - name: Telemetry
+    description: >-
+      Trajectory event ingestion. Structure-only capture by default; payload
+      capture is opt-in per field.
+  - name: Approvals
+    description: >-
+      Human-in-the-loop escalation queue for actions that exceed policy.
+  - name: Analytics
+    description: >-
+      Spend and budget queries aggregated across sessions and agents.
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ----------------------------------------------------------------- Auth ---
+  /auth/device/code:
+    post:
+      tags: [Auth]
+      operationId: startDeviceAuthorization
+      summary: Start CLI device authorization
+      description: >-
+        Begin the OAuth 2.0 device authorization grant (RFC 8628) used by the
+        `drun-dash` CLI. Returns a `device_code`, a `user_code`, and a
+        verification URL the user opens in a browser.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceAuthorizationRequest'
+      responses:
+        '200':
+          description: Device authorization started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceAuthorizationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /auth/device/token:
+    post:
+      tags: [Auth]
+      operationId: pollDeviceToken
+      summary: Poll for the device access token
+      description: >-
+        Exchange a `device_code` for an access token. The CLI polls this
+        endpoint at the interval returned by `startDeviceAuthorization` until
+        the user approves, the request is denied, or the code expires.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceTokenRequest'
+      responses:
+        '200':
+          description: Token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          description: >-
+            Grant still pending or failed. `error` follows RFC 8628 semantics
+            (`authorization_pending`, `slow_down`, `access_denied`,
+            `expired_token`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthError'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /auth/session:
+    post:
+      tags: [Auth]
+      operationId: exchangeOidcSession
+      summary: Exchange an OIDC session for an API token
+      description: >-
+        Called server-side by the admin UI after a user completes the OIDC
+        login. Exchanges the verified OIDC identity for a control-plane Bearer
+        JWT scoped to the admin's organization and roles.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OidcSessionExchangeRequest'
+      responses:
+        '200':
+          description: Token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /auth/whoami:
+    get:
+      tags: [Auth]
+      operationId: getCurrentIdentity
+      summary: Describe the authenticated principal
+      description: >-
+        Return the identity, organization, and roles associated with the
+        presented Bearer JWT. Used by clients to render context and by the LLM
+        proxy to sanity-check token audience.
+      responses:
+        '200':
+          description: Current identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Identity'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  # --------------------------------------------------------------- Agents ---
+  /agents:
+    get:
+      tags: [Agents]
+      operationId: listAgents
+      summary: List catalog agents
+      description: List agents in the calling organization's catalog.
+      parameters:
+        - $ref: '#/components/parameters/PageLimit'
+        - $ref: '#/components/parameters/PageCursor'
+      responses:
+        '200':
+          description: A page of agents.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      tags: [Agents]
+      operationId: createAgent
+      summary: Create a catalog agent
+      description: Register a new agent in the catalog.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentCreate'
+      responses:
+        '201':
+          description: Agent created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /agents/{agentId}:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    get:
+      tags: [Agents]
+      operationId: getAgent
+      summary: Get an agent
+      description: Fetch a single catalog agent by ID.
+      responses:
+        '200':
+          description: The agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    patch:
+      tags: [Agents]
+      operationId: updateAgent
+      summary: Update an agent
+      description: Update mutable metadata of a catalog agent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentUpdate'
+      responses:
+        '200':
+          description: Agent updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    delete:
+      tags: [Agents]
+      operationId: deleteAgent
+      summary: Delete an agent
+      description: Remove an agent from the catalog. Existing sessions are unaffected.
+      responses:
+        '204':
+          description: Agent deleted.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /agents/{agentId}/versions:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    get:
+      tags: [Agents]
+      operationId: listAgentVersions
+      summary: List agent versions
+      description: List the immutable published versions of an agent.
+      responses:
+        '200':
+          description: A list of versions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentVersionList'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      tags: [Agents]
+      operationId: publishAgentVersion
+      summary: Publish an agent version
+      description: >-
+        Publish a new immutable version of an agent. Versions cannot be
+        mutated once published; supersede by publishing a new one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentVersionCreate'
+      responses:
+        '201':
+          description: Version published.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /agents/{agentId}/entitlements:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    get:
+      tags: [Agents]
+      operationId: listAgentEntitlements
+      summary: List agent entitlements
+      description: >-
+        List which principals (users, groups) may launch this agent and under
+        which policy.
+      responses:
+        '200':
+          description: Entitlements for the agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntitlementList'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    put:
+      tags: [Agents]
+      operationId: setAgentEntitlements
+      summary: Replace agent entitlements
+      description: Replace the full entitlement set for the agent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EntitlementList'
+      responses:
+        '200':
+          description: Entitlements replaced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntitlementList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  # ------------------------------------------------------------- Policies ---
+  /policies:
+    get:
+      tags: [Policies]
+      operationId: listPolicies
+      summary: List policies
+      description: List policy boundaries in the organization.
+      parameters:
+        - $ref: '#/components/parameters/PageLimit'
+        - $ref: '#/components/parameters/PageCursor'
+      responses:
+        '200':
+          description: A page of policies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      tags: [Policies]
+      operationId: createPolicy
+      summary: Create a policy
+      description: >-
+        Create a new policy boundary. The first version (1) is created
+        alongside the policy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyCreate'
+      responses:
+        '201':
+          description: Policy created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /policies/{policyId}:
+    parameters:
+      - $ref: '#/components/parameters/PolicyId'
+    get:
+      tags: [Policies]
+      operationId: getPolicy
+      summary: Get a policy
+      description: Fetch a policy and its current version pointer.
+      responses:
+        '200':
+          description: The policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /policies/{policyId}/versions:
+    parameters:
+      - $ref: '#/components/parameters/PolicyId'
+    get:
+      tags: [Policies]
+      operationId: listPolicyVersions
+      summary: List policy versions
+      description: >-
+        List the immutable, signed versions of a policy. Each version carries
+        signing metadata used to verify the policy bundle at session launch.
+      responses:
+        '200':
+          description: A list of policy versions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyVersionList'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      tags: [Policies]
+      operationId: publishPolicyVersion
+      summary: Publish a policy version
+      description: >-
+        Publish a new signed version of a policy boundary. The server records
+        the signing metadata (algorithm, key ID, signature, signed digest).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyVersionCreate'
+      responses:
+        '201':
+          description: Policy version published.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  # ------------------------------------------------------------- Sessions ---
+  /sessions:
+    get:
+      tags: [Sessions]
+      operationId: listSessions
+      summary: List sessions
+      description: List governed agent sessions visible to the caller.
+      parameters:
+        - $ref: '#/components/parameters/PageLimit'
+        - $ref: '#/components/parameters/PageCursor'
+        - name: status
+          in: query
+          required: false
+          description: Filter by session status.
+          schema:
+            $ref: '#/components/schemas/SessionStatus'
+      responses:
+        '200':
+          description: A page of sessions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /sessions/launch:
+    post:
+      tags: [Sessions]
+      operationId: launchSession
+      summary: Launch a governed session
+      description: >-
+        Launch a governed agent session. The control plane resolves the
+        agent version and entitlement, evaluates the applicable policy, mints
+        scoped LLM-proxy credentials, and returns the signed policy bundle the
+        client must enforce locally. This is the primary entry point for the
+        CLI.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionLaunchRequest'
+      responses:
+        '201':
+          description: Session launched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionLaunchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller is not entitled to launch this agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /sessions/{sessionId}:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    get:
+      tags: [Sessions]
+      operationId: getSession
+      summary: Get a session
+      description: Fetch the current state of a governed session.
+      responses:
+        '200':
+          description: The session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /sessions/{sessionId}/terminate:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    post:
+      tags: [Sessions]
+      operationId: terminateSession
+      summary: Terminate a session
+      description: >-
+        Terminate a running session and revoke its proxy credentials. Idempotent
+        once the session has reached a terminal state.
+      responses:
+        '200':
+          description: Session terminated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  # ------------------------------------------------------------ Telemetry ---
+  /sessions/{sessionId}/trajectory:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    post:
+      tags: [Telemetry]
+      operationId: ingestTrajectoryEvents
+      summary: Ingest trajectory events
+      description: >-
+        Batch-ingest trajectory events for a session. By default only the
+        structure of each event is captured; payloads are recorded only for
+        fields explicitly marked `field_class: payload` and permitted by the
+        session's policy. Structure-only fields carry `field_class: structure`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrajectoryEventBatch'
+      responses:
+        '202':
+          description: Events accepted for processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestAck'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    get:
+      tags: [Telemetry]
+      operationId: listTrajectoryEvents
+      summary: List trajectory events
+      description: Read back the recorded trajectory events for a session.
+      parameters:
+        - $ref: '#/components/parameters/PageLimit'
+        - $ref: '#/components/parameters/PageCursor'
+      responses:
+        '200':
+          description: A page of trajectory events.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrajectoryEventList'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  # ------------------------------------------------------------ Approvals ---
+  /approvals:
+    get:
+      tags: [Approvals]
+      operationId: listApprovals
+      summary: List escalation queue
+      description: >-
+        List approval requests in the escalation queue, optionally filtered by
+        status. Backs the admin UI approval inbox.
+      parameters:
+        - $ref: '#/components/parameters/PageLimit'
+        - $ref: '#/components/parameters/PageCursor'
+        - name: status
+          in: query
+          required: false
+          description: Filter by approval status.
+          schema:
+            $ref: '#/components/schemas/ApprovalStatus'
+      responses:
+        '200':
+          description: A page of approval requests.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      tags: [Approvals]
+      operationId: createApproval
+      summary: Raise an approval request
+      description: >-
+        Raise an approval request when an agent action exceeds its policy
+        boundary. Typically called by the LLM proxy or the CLI on a fail-closed
+        decision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalCreate'
+      responses:
+        '201':
+          description: Approval request created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Approval'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /approvals/{approvalId}/decision:
+    parameters:
+      - $ref: '#/components/parameters/ApprovalId'
+    post:
+      tags: [Approvals]
+      operationId: decideApproval
+      summary: Decide an approval request
+      description: >-
+        Approve or deny a queued escalation. Recorded with the deciding
+        principal and an optional reason for the audit trail.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalDecision'
+      responses:
+        '200':
+          description: Decision recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Approval'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The approval has already been decided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  # ------------------------------------------------------------ Analytics ---
+  /analytics/spend:
+    get:
+      tags: [Analytics]
+      operationId: querySpend
+      summary: Query spend
+      description: >-
+        Query aggregated LLM spend over a time window, grouped by a chosen
+        dimension (agent, policy, or principal).
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - name: group_by
+          in: query
+          required: false
+          description: Dimension to group spend by.
+          schema:
+            type: string
+            enum: [agent, policy, principal]
+            default: agent
+      responses:
+        '200':
+          description: Spend aggregation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpendReport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /analytics/budgets:
+    get:
+      tags: [Analytics]
+      operationId: listBudgets
+      summary: List budgets
+      description: List configured budgets and their current utilization.
+      responses:
+        '200':
+          description: Budgets and utilization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Control-plane Bearer JWT. Obtained from the OAuth 2.0 device flow (CLI)
+        or the OIDC session exchange (admin UI). Also validated by the LLM
+        proxy. The device-flow endpoints that mint this token are described
+        under the `Auth` tag (`/auth/device/*`).
+
+  parameters:
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Maximum number of items to return.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    PageCursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque cursor from a previous page's `next_cursor`.
+      schema:
+        type: string
+    From:
+      name: from
+      in: query
+      required: true
+      description: Inclusive start of the query window (RFC 3339).
+      schema:
+        type: string
+        format: date-time
+    To:
+      name: to
+      in: query
+      required: true
+      description: Exclusive end of the query window (RFC 3339).
+      schema:
+        type: string
+        format: date-time
+    AgentId:
+      name: agentId
+      in: path
+      required: true
+      description: Agent identifier.
+      schema:
+        $ref: '#/components/schemas/Id'
+    PolicyId:
+      name: policyId
+      in: path
+      required: true
+      description: Policy identifier.
+      schema:
+        $ref: '#/components/schemas/Id'
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      description: Session identifier.
+      schema:
+        $ref: '#/components/schemas/Id'
+    ApprovalId:
+      name: approvalId
+      in: path
+      required: true
+      description: Approval request identifier.
+      schema:
+        $ref: '#/components/schemas/Id'
+
+  responses:
+    BadRequest:
+      description: The request was malformed or failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Authentication is missing or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The requested resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotImplemented:
+      description: >-
+        This operation is defined by the contract but not yet implemented by
+        the reference server.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Id:
+      type: string
+      description: Opaque, URL-safe resource identifier.
+      examples:
+        - agt_7f3c9a2b
+
+    Timestamp:
+      type: string
+      format: date-time
+      description: RFC 3339 timestamp.
+
+    Error:
+      type: object
+      description: Standard error envelope.
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable, machine-readable error code.
+          examples:
+            - not_implemented
+        message:
+          type: string
+          description: Human-readable explanation.
+        details:
+          type: object
+          additionalProperties: true
+          description: Optional structured context for the error.
+
+    OAuthError:
+      type: object
+      description: RFC 6749 / RFC 8628 style OAuth error.
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: OAuth error code.
+          examples:
+            - authorization_pending
+        error_description:
+          type: string
+          description: Human-readable explanation.
+
+    Page:
+      type: object
+      description: Pagination envelope fields.
+      properties:
+        next_cursor:
+          type: string
+          nullable: true
+          description: Cursor for the next page, or null when exhausted.
+
+    # ---- Auth ----
+    DeviceAuthorizationRequest:
+      type: object
+      required: [client_id]
+      properties:
+        client_id:
+          type: string
+          description: Registered CLI client identifier.
+        scope:
+          type: string
+          description: Space-delimited requested scopes.
+
+    DeviceAuthorizationResponse:
+      type: object
+      required: [device_code, user_code, verification_uri, expires_in, interval]
+      properties:
+        device_code:
+          type: string
+          description: Code the CLI exchanges for a token.
+        user_code:
+          type: string
+          description: Short code the user enters in the browser.
+        verification_uri:
+          type: string
+          format: uri
+          description: URL the user visits to approve the request.
+        verification_uri_complete:
+          type: string
+          format: uri
+          description: Verification URL with the user code pre-filled.
+        expires_in:
+          type: integer
+          description: Lifetime of the device code in seconds.
+        interval:
+          type: integer
+          description: Minimum polling interval in seconds.
+
+    DeviceTokenRequest:
+      type: object
+      required: [client_id, device_code, grant_type]
+      properties:
+        client_id:
+          type: string
+          description: Registered CLI client identifier.
+        device_code:
+          type: string
+          description: The device code being polled.
+        grant_type:
+          type: string
+          description: Must be the device-code grant type.
+          enum: ['urn:ietf:params:oauth:grant-type:device_code']
+
+    OidcSessionExchangeRequest:
+      type: object
+      required: [id_token]
+      properties:
+        id_token:
+          type: string
+          description: OIDC ID token verified by the admin UI server.
+        organization_id:
+          $ref: '#/components/schemas/Id'
+
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+          description: Control-plane Bearer JWT.
+        token_type:
+          type: string
+          enum: [Bearer]
+          description: Always `Bearer`.
+        expires_in:
+          type: integer
+          description: Token lifetime in seconds.
+        refresh_token:
+          type: string
+          description: Optional refresh token.
+
+    Identity:
+      type: object
+      required: [subject, organization_id, roles]
+      properties:
+        subject:
+          type: string
+          description: Stable principal identifier.
+        organization_id:
+          $ref: '#/components/schemas/Id'
+        email:
+          type: string
+          format: email
+          description: Principal email, when available.
+        roles:
+          type: array
+          description: Roles granted to the principal.
+          items:
+            type: string
+
+    # ---- Agents ----
+    Agent:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        name:
+          type: string
+          description: Human-friendly agent name.
+        description:
+          type: string
+          description: What the agent does.
+        default_policy_id:
+          $ref: '#/components/schemas/Id'
+        latest_version:
+          type: integer
+          description: Highest published version number, if any.
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    AgentCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Human-friendly agent name.
+        description:
+          type: string
+          description: What the agent does.
+        default_policy_id:
+          $ref: '#/components/schemas/Id'
+
+    AgentUpdate:
+      type: object
+      description: Mutable agent fields; all optional.
+      properties:
+        name:
+          type: string
+          description: Human-friendly agent name.
+        description:
+          type: string
+          description: What the agent does.
+        default_policy_id:
+          $ref: '#/components/schemas/Id'
+
+    AgentList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Agent'
+
+    AgentVersion:
+      type: object
+      required: [agent_id, version, created_at]
+      properties:
+        agent_id:
+          $ref: '#/components/schemas/Id'
+        version:
+          type: integer
+          description: Monotonic version number.
+        manifest_digest:
+          type: string
+          description: Content digest of the version manifest.
+        notes:
+          type: string
+          description: Release notes for the version.
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    AgentVersionCreate:
+      type: object
+      required: [manifest_digest]
+      properties:
+        manifest_digest:
+          type: string
+          description: Content digest of the version manifest.
+        notes:
+          type: string
+          description: Release notes for the version.
+
+    AgentVersionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentVersion'
+
+    Entitlement:
+      type: object
+      required: [principal_type, principal_id]
+      properties:
+        principal_type:
+          type: string
+          enum: [user, group]
+          description: Kind of principal the entitlement grants to.
+        principal_id:
+          $ref: '#/components/schemas/Id'
+        policy_id:
+          $ref: '#/components/schemas/Id'
+        max_fan_out:
+          type: integer
+          minimum: 0
+          description: >-
+            Optional ceiling on concurrent sub-agents for sessions launched
+            under this entitlement. Bounds `fan_out_ceiling` at launch.
+
+    EntitlementList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Entitlement'
+
+    # ---- Policies ----
+    Policy:
+      type: object
+      required: [id, name, current_version, created_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        name:
+          type: string
+          description: Human-friendly policy name.
+        description:
+          type: string
+          description: What the boundary enforces.
+        current_version:
+          type: integer
+          description: Version number currently in effect.
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    PolicyCreate:
+      type: object
+      required: [name, boundary]
+      properties:
+        name:
+          type: string
+          description: Human-friendly policy name.
+        description:
+          type: string
+          description: What the boundary enforces.
+        boundary:
+          $ref: '#/components/schemas/PolicyBoundary'
+
+    PolicyList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Policy'
+
+    PolicyBoundary:
+      type: object
+      description: >-
+        Declarative boundary the agent must stay within. Free-form by design at
+        this contract stage; concrete rule schema is defined by the policy
+        engine.
+      properties:
+        allowed_tools:
+          type: array
+          description: Tools the agent may invoke.
+          items:
+            type: string
+        network:
+          type: string
+          enum: [none, allowlist, unrestricted]
+          description: Network egress posture.
+        fan_out_ceiling:
+          type: integer
+          minimum: 0
+          description: Default ceiling on concurrent sub-agents.
+        rules:
+          type: object
+          additionalProperties: true
+          description: Additional engine-specific rules.
+
+    PolicyVersion:
+      type: object
+      required: [policy_id, version, digest, signing, created_at]
+      properties:
+        policy_id:
+          $ref: '#/components/schemas/Id'
+        version:
+          type: integer
+          description: Monotonic version number.
+        digest:
+          type: string
+          description: Content digest of the signed boundary document.
+        boundary:
+          $ref: '#/components/schemas/PolicyBoundary'
+        signing:
+          $ref: '#/components/schemas/SigningMetadata'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    PolicyVersionCreate:
+      type: object
+      required: [boundary, signing]
+      properties:
+        boundary:
+          $ref: '#/components/schemas/PolicyBoundary'
+        signing:
+          $ref: '#/components/schemas/SigningMetadata'
+
+    PolicyVersionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyVersion'
+
+    SigningMetadata:
+      type: object
+      description: >-
+        Detached-signature metadata proving policy provenance. Verified by the
+        client when it receives the policy bundle at session launch.
+      required: [algorithm, key_id, signature]
+      properties:
+        algorithm:
+          type: string
+          description: Signature algorithm.
+          examples:
+            - ed25519
+        key_id:
+          type: string
+          description: Identifier of the signing key.
+        signature:
+          type: string
+          description: Base64-encoded detached signature over the digest.
+        signed_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    # ---- Sessions ----
+    SessionStatus:
+      type: string
+      description: Lifecycle state of a governed session.
+      enum: [pending, active, terminated, failed]
+
+    SessionLaunchRequest:
+      type: object
+      required: [agent_id]
+      properties:
+        agent_id:
+          $ref: '#/components/schemas/Id'
+        agent_version:
+          type: integer
+          description: Pin to a specific agent version; defaults to latest.
+        requested_fan_out:
+          type: integer
+          minimum: 0
+          description: >-
+            Desired concurrent sub-agent count. Clamped to the policy and
+            entitlement ceilings; the effective value is returned as
+            `fan_out_ceiling`.
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+          description: Client-supplied labels for attribution.
+
+    SessionLaunchResponse:
+      type: object
+      description: >-
+        Everything the client needs to run a governed session locally: the
+        session id, the signed policy bundle to enforce, and scoped LLM-proxy
+        credentials.
+      required:
+        - session_id
+        - policy_bundle
+        - proxy_base_url
+        - proxy_token
+        - fan_out_ceiling
+      properties:
+        session_id:
+          $ref: '#/components/schemas/Id'
+        policy_bundle:
+          $ref: '#/components/schemas/PolicyBundle'
+        proxy_base_url:
+          type: string
+          format: uri
+          description: Base URL of the LLM proxy this session must route through.
+        proxy_token:
+          type: string
+          description: >-
+            Scoped, short-lived token the LLM proxy accepts for this session.
+        fan_out_ceiling:
+          type: integer
+          minimum: 0
+          description: >-
+            Effective maximum number of concurrent sub-agents permitted for
+            this session, after clamping the request to policy and entitlement.
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    PolicyBundle:
+      type: object
+      description: >-
+        Signed, self-contained policy the client enforces for the session.
+      required: [policy_id, version, boundary, signing]
+      properties:
+        policy_id:
+          $ref: '#/components/schemas/Id'
+        version:
+          type: integer
+          description: Policy version captured in the bundle.
+        boundary:
+          $ref: '#/components/schemas/PolicyBoundary'
+        signing:
+          $ref: '#/components/schemas/SigningMetadata'
+
+    Session:
+      type: object
+      required: [session_id, agent_id, status, fan_out_ceiling, created_at]
+      properties:
+        session_id:
+          $ref: '#/components/schemas/Id'
+        agent_id:
+          $ref: '#/components/schemas/Id'
+        agent_version:
+          type: integer
+          description: Agent version the session is running.
+        policy_id:
+          $ref: '#/components/schemas/Id'
+        policy_version:
+          type: integer
+          description: Policy version in effect.
+        status:
+          $ref: '#/components/schemas/SessionStatus'
+        fan_out_ceiling:
+          type: integer
+          minimum: 0
+          description: Effective concurrent sub-agent ceiling.
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        terminated_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    SessionList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Session'
+
+    # ---- Telemetry ----
+    FieldClass:
+      type: string
+      description: >-
+        Capture class of a trajectory field. `structure` records only the shape
+        and metadata of the field (default); `payload` records the field's raw
+        value and is only honored when policy permits.
+      enum: [structure, payload]
+
+    TrajectoryField:
+      type: object
+      description: A single captured field within a trajectory event.
+      required: [key, field_class]
+      properties:
+        key:
+          type: string
+          description: Field name within the event.
+        field_class:
+          $ref: '#/components/schemas/FieldClass'
+        value:
+          description: >-
+            Raw value, present only when `field_class` is `payload` and capture
+            is permitted; otherwise omitted.
+        value_type:
+          type: string
+          description: Structural type of the value (e.g. string, object, array).
+        byte_size:
+          type: integer
+          minimum: 0
+          description: Size of the original value in bytes (structure metadata).
+
+    TrajectoryEvent:
+      type: object
+      description: A single event in an agent's execution trajectory.
+      required: [event_id, type, occurred_at, field_class]
+      properties:
+        event_id:
+          type: string
+          description: Client-generated unique event id (for idempotency).
+        type:
+          type: string
+          description: Event type.
+          examples:
+            - tool_call
+        occurred_at:
+          $ref: '#/components/schemas/Timestamp'
+        field_class:
+          $ref: '#/components/schemas/FieldClass'
+        parent_event_id:
+          type: string
+          description: Parent event id for nested/sub-agent trajectories.
+        fields:
+          type: array
+          description: Per-field capture records for this event.
+          items:
+            $ref: '#/components/schemas/TrajectoryField'
+
+    TrajectoryEventBatch:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/TrajectoryEvent'
+
+    TrajectoryEventList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/TrajectoryEvent'
+
+    IngestAck:
+      type: object
+      required: [accepted]
+      properties:
+        accepted:
+          type: integer
+          description: Number of events accepted.
+        rejected:
+          type: integer
+          description: Number of events rejected (e.g. duplicates).
+
+    # ---- Approvals ----
+    ApprovalStatus:
+      type: string
+      description: State of an approval request.
+      enum: [pending, approved, denied, expired]
+
+    Approval:
+      type: object
+      required: [id, session_id, action, status, created_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        session_id:
+          $ref: '#/components/schemas/Id'
+        action:
+          type: string
+          description: The action that requires approval.
+        reason:
+          type: string
+          description: Why the action exceeded policy.
+        status:
+          $ref: '#/components/schemas/ApprovalStatus'
+        decided_by:
+          type: string
+          description: Principal who decided the request, if decided.
+        decided_at:
+          $ref: '#/components/schemas/Timestamp'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    ApprovalCreate:
+      type: object
+      required: [session_id, action]
+      properties:
+        session_id:
+          $ref: '#/components/schemas/Id'
+        action:
+          type: string
+          description: The action that requires approval.
+        reason:
+          type: string
+          description: Why the action exceeded policy.
+        context:
+          type: object
+          additionalProperties: true
+          description: Structured context to help the approver decide.
+
+    ApprovalDecision:
+      type: object
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [approve, deny]
+          description: The approver's decision.
+        reason:
+          type: string
+          description: Optional rationale recorded in the audit trail.
+
+    ApprovalList:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Approval'
+
+    # ---- Analytics ----
+    SpendReport:
+      type: object
+      required: [from, to, currency, total, groups]
+      properties:
+        from:
+          $ref: '#/components/schemas/Timestamp'
+        to:
+          $ref: '#/components/schemas/Timestamp'
+        currency:
+          type: string
+          description: ISO 4217 currency code.
+          examples:
+            - USD
+        total:
+          type: number
+          description: Total spend over the window.
+        groups:
+          type: array
+          description: Spend broken down by the requested dimension.
+          items:
+            $ref: '#/components/schemas/SpendGroup'
+
+    SpendGroup:
+      type: object
+      required: [key, amount]
+      properties:
+        key:
+          type: string
+          description: Group key (agent id, policy id, or principal).
+        amount:
+          type: number
+          description: Spend attributed to the group.
+        tokens:
+          type: integer
+          description: Total tokens attributed to the group.
+
+    Budget:
+      type: object
+      required: [id, name, limit, spent, currency, period]
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        name:
+          type: string
+          description: Human-friendly budget name.
+        limit:
+          type: number
+          description: Budget ceiling for the period.
+        spent:
+          type: number
+          description: Amount spent so far in the period.
+        currency:
+          type: string
+          description: ISO 4217 currency code.
+        period:
+          type: string
+          enum: [daily, weekly, monthly]
+          description: Reset cadence.
+
+    BudgetList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Budget'

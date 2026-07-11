@@ -1,0 +1,53 @@
+# Spectral lint rules for the drun-dash OpenAPI contract.
+# Run:  npx @stoplight/spectral-cli lint openapi/v1.yaml
+#
+# Extends the built-in OpenAPI ruleset (spectral:oas) and layers on a few
+# house rules that keep the contract documented, tagged, and consistent.
+extends:
+  - spectral:oas
+
+rules:
+  # --- Documentation hygiene ---------------------------------------------
+  info-contact: warn
+  info-description: error
+  operation-description: error
+  operation-tag-defined: error
+  operation-tags: error
+  tag-description: warn
+
+  # Every operation must carry a unique operationId (needed for codegen).
+  operation-operationId: error
+  operation-operationId-unique: error
+
+  # Descriptions should not be empty or trivially short.
+  oas3-unused-component: warn
+
+  # --- House rules --------------------------------------------------------
+  # Require a summary on every operation so generated docs read cleanly.
+  operation-summary:
+    description: Every operation should have a summary.
+    severity: warn
+    given: $.paths[*][get,put,post,delete,patch,options,head,trace]
+    then:
+      field: summary
+      function: truthy
+
+  # Path segments must be kebab-case or a templated {param}.
+  path-kebab-case:
+    description: Path segments should be kebab-case or path parameters.
+    severity: warn
+    given: $.paths[*]~
+    then:
+      function: pattern
+      functionOptions:
+        match: '^(/([a-z0-9]+(-[a-z0-9]+)*|\{[a-zA-Z0-9_]+\}))*/?$'
+
+  # Discourage trailing slashes on paths.
+  no-trailing-slash:
+    description: Paths should not end with a trailing slash.
+    severity: warn
+    given: $.paths[*]~
+    then:
+      function: pattern
+      functionOptions:
+        notMatch: '.+/$'
