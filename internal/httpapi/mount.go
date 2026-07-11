@@ -106,6 +106,8 @@ func Mount(r chi.Router, deps Deps) {
 		pr.Post("/sessions/launch", deps.launchSession)
 		pr.Get("/sessions/{sessionId}", deps.getSession)
 		pr.Post("/sessions/{sessionId}/terminate", deps.terminateSession)
+		pr.Post("/sessions/{sessionId}/trajectory", deps.ingestTrajectoryEvents)
+		pr.Get("/sessions/{sessionId}/trajectory", deps.listTrajectoryEvents)
 
 		pr.Get("/approvals", deps.listApprovals)
 		pr.Post("/approvals", deps.createApproval)
