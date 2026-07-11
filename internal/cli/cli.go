@@ -51,6 +51,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return policiesCmd(args[1:], stdout, stderr)
 	case "sessions", "session":
 		return sessionsCmd(args[1:], stdout, stderr)
+	case "matrix":
+		return matrixCmd(args[1:], stdout, stderr)
 	case "approvals":
 		return approvalsCmd(args[1:], stdout, stderr)
 	case "spend":
@@ -77,6 +79,7 @@ Commands:
   agents     List and inspect catalog agents
   policies   List and inspect policies and their signed versions
   sessions   List, inspect, launch, and terminate governed sessions
+  matrix     Fan a task across governed sessions, score, and promote the winner
   approvals  List and decide escalation-queue approval requests
   spend      Query aggregated LLM spend over a time window
   config     Print the resolved runtime configuration
