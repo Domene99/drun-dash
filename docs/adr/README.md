@@ -25,3 +25,4 @@ time, so that later work streams stay consistent without re-litigating it.
 | ADR | Title | Status |
 |-----|-------|--------|
 | [0001](0001-authentication-and-session-model.md) | Authentication and session model | Proposed |
+| [0002](0002-rest-api-conventions.md) | REST API conventions (org scoping, error mapping, pagination, DTO mapping) | Proposed |
