@@ -43,20 +43,28 @@ const proxyTokenBytes = 32
 // leaves them at their defaults, which build the real store over the request's
 // pool (resolution in ADR-0003 §1 is read-only, so these run on d.Pool, not a
 // transaction).
+//
+// agentVersionStore and entitlementStore are shared with the agent catalog
+// handlers (agents.go): those add the version-history read (ListByAgent) and the
+// entitlement replace (Create/Delete) the launch path does not itself use, so
+// the interfaces carry a superset of the launch handlers' needs.
 
-type agentVersionReader interface {
+type agentVersionStore interface {
 	GetByAgentAndVersion(ctx context.Context, agentID string, version int) (store.AgentVersion, error)
+	ListByAgent(ctx context.Context, agentID string) ([]store.AgentVersion, error)
 }
 
-var newAgentVersionStore = func(q store.Querier) agentVersionReader {
+var newAgentVersionStore = func(q store.Querier) agentVersionStore {
 	return store.NewAgentVersionStore(q)
 }
 
-type entitlementReader interface {
+type entitlementStore interface {
 	ListByAgent(ctx context.Context, agentID string) ([]store.Entitlement, error)
+	Create(ctx context.Context, p store.CreateEntitlementParams) (store.Entitlement, error)
+	Delete(ctx context.Context, id string) error
 }
 
-var newEntitlementStore = func(q store.Querier) entitlementReader {
+var newEntitlementStore = func(q store.Querier) entitlementStore {
 	return store.NewEntitlementStore(q)
 }
 

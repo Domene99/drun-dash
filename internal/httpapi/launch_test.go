@@ -19,8 +19,9 @@ import (
 // ---- launch-specific fakes ------------------------------------------------
 
 type fakeAgentVersionStore struct {
-	byVersion map[int]store.AgentVersion
-	err       error
+	byVersion    map[int]store.AgentVersion
+	listVersions []store.AgentVersion
+	err          error
 
 	gotAgentID string
 	gotVersion int
@@ -38,15 +39,54 @@ func (f *fakeAgentVersionStore) GetByAgentAndVersion(_ context.Context, agentID 
 	return av, nil
 }
 
+func (f *fakeAgentVersionStore) ListByAgent(_ context.Context, agentID string) ([]store.AgentVersion, error) {
+	f.gotAgentID = agentID
+	return f.listVersions, f.err
+}
+
 type fakeEntitlementStore struct {
-	ents       []store.Entitlement
-	err        error
-	gotAgentID string
+	ents      []store.Entitlement
+	err       error
+	createErr error
+	deleteErr error
+	createRet []store.Entitlement
+
+	gotAgentID    string
+	gotDeletedIDs []string
+	gotCreated    []store.CreateEntitlementParams
+	createIdx     int
 }
 
 func (f *fakeEntitlementStore) ListByAgent(_ context.Context, agentID string) ([]store.Entitlement, error) {
 	f.gotAgentID = agentID
 	return f.ents, f.err
+}
+
+func (f *fakeEntitlementStore) Delete(_ context.Context, id string) error {
+	f.gotDeletedIDs = append(f.gotDeletedIDs, id)
+	return f.deleteErr
+}
+
+func (f *fakeEntitlementStore) Create(_ context.Context, p store.CreateEntitlementParams) (store.Entitlement, error) {
+	f.gotCreated = append(f.gotCreated, p)
+	if f.createErr != nil {
+		return store.Entitlement{}, f.createErr
+	}
+	var e store.Entitlement
+	if f.createIdx < len(f.createRet) {
+		e = f.createRet[f.createIdx]
+	} else {
+		e = store.Entitlement{
+			ID:              "ent-new",
+			AgentID:         p.AgentID,
+			MemberID:        p.MemberID,
+			TeamID:          p.TeamID,
+			PolicyVersionID: p.PolicyVersionID,
+			MaxFanOut:       p.MaxFanOut,
+		}
+	}
+	f.createIdx++
+	return e, nil
 }
 
 type fakeTeamMembershipStore struct {
@@ -187,8 +227,8 @@ func setLaunchSeams(t *testing.T, f *launchFixture) {
 	t.Helper()
 	oa, oav, oe, ot, op, ow := newAgentStore, newAgentVersionStore, newEntitlementStore, newTeamMembershipStore, newPolicyVersionStore, newSessionLaunchWriter
 	newAgentStore = func(store.Querier) agentStore { return f.agent }
-	newAgentVersionStore = func(store.Querier) agentVersionReader { return f.versions }
-	newEntitlementStore = func(store.Querier) entitlementReader { return f.ents }
+	newAgentVersionStore = func(store.Querier) agentVersionStore { return f.versions }
+	newEntitlementStore = func(store.Querier) entitlementStore { return f.ents }
 	newTeamMembershipStore = func(store.Querier) teamMembershipReader { return f.teams }
 	newPolicyVersionStore = func(store.Querier) policyVersionStore { return f.policies }
 	newSessionLaunchWriter = func(*db.Pool) sessionLaunchWriter { return f.writer }

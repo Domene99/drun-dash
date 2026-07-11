@@ -23,6 +23,9 @@ type fakeAgentStore struct {
 	getErr      error
 	listAgents  []store.Agent
 	listErr     error
+	updateAgent store.Agent
+	updateErr   error
+	deleteErr   error
 
 	// Captured call arguments.
 	gotCreateOrg  string
@@ -33,6 +36,10 @@ type fakeAgentStore struct {
 	gotListLimit  int
 	gotListAfterC time.Time
 	gotListAfterI string
+	gotUpdateID   string
+	gotUpdateName string
+	gotUpdateDesc *string
+	gotDeleteID   string
 }
 
 func (f *fakeAgentStore) Create(_ context.Context, orgID, name string, description *string) (store.Agent, error) {
@@ -48,6 +55,16 @@ func (f *fakeAgentStore) GetByID(_ context.Context, id string) (store.Agent, err
 func (f *fakeAgentStore) ListByOrgPage(_ context.Context, orgID string, limit int, afterCreatedAt time.Time, afterID string) ([]store.Agent, error) {
 	f.gotListOrg, f.gotListLimit, f.gotListAfterC, f.gotListAfterI = orgID, limit, afterCreatedAt, afterID
 	return f.listAgents, f.listErr
+}
+
+func (f *fakeAgentStore) Update(_ context.Context, id, name string, description *string) (store.Agent, error) {
+	f.gotUpdateID, f.gotUpdateName, f.gotUpdateDesc = id, name, description
+	return f.updateAgent, f.updateErr
+}
+
+func (f *fakeAgentStore) Delete(_ context.Context, id string) error {
+	f.gotDeleteID = id
+	return f.deleteErr
 }
 
 // setAgentStore points the newAgentStore seam at s for the duration of the
@@ -364,6 +381,12 @@ func TestAgentRoutesRequireAuth(t *testing.T) {
 		{http.MethodGet, "/agents"},
 		{http.MethodPost, "/agents"},
 		{http.MethodGet, "/agents/a1"},
+		{http.MethodPatch, "/agents/a1"},
+		{http.MethodDelete, "/agents/a1"},
+		{http.MethodGet, "/agents/a1/versions"},
+		{http.MethodPost, "/agents/a1/versions"},
+		{http.MethodGet, "/agents/a1/entitlements"},
+		{http.MethodPut, "/agents/a1/entitlements"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
