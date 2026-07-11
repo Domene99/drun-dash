@@ -8,9 +8,10 @@ This package covers the **tenancy + identity** tables (migrations
 billing, and the catalog itself (migrations `000003`–`000004`) — and the
 **runtime + telemetry domain** — launched sessions, scoped proxy credentials,
 append-only usage metering, the approval queue, and ingested trajectories
-(migrations `000005`–`000006`). The tenancy repositories are the **reference
-pattern** every other store copies, so consistency across the package matters
-more than breadth.
+(migrations `000005`–`000006`). It also exposes the read-only **analytics
+aggregation** queries (spend rollups and budget utilisation) that the analytics
+endpoints build on. The tenancy repositories are the **reference pattern** every
+other store copies, so consistency across the package matters more than breadth.
 
 ## The pattern
 
@@ -89,6 +90,18 @@ more than breadth.
 | `trajectories.go` | `TrajectoryStore` | `Create`, `GetByID`, `ListByOrg`, `SetEnded` |
 | `trajectory_nodes.go` | `TrajectoryNodeStore` | `Create`, `GetByID`, `GetByEventID`, `ListByTrajectory` |
 
+### Analytics (aggregation over `000004`–`000005`)
+
+| File | Type | Methods |
+|------|------|---------|
+| `analytics.go` | `AnalyticsStore` | `SpendByOrg` (spend + tokens grouped by agent / policy / principal), `BudgetUtilization` (current-window spend vs. hard-cap per budget rule) |
+
+`AnalyticsStore` owns no table — every method is a `GROUP BY` / `SUM` read over
+`usage_events` (joined through `sessions` / `policy_versions` for the policy and
+principal groupings) and `budgets` / `budget_rules`. Its result rows
+(`SpendSummary`, `SpendGroupRow`, `BudgetUsageRow`) live inline in `analytics.go`
+rather than a `models_*.go` file, since they are query shapes, not table rows.
+
 The row structs live in per-domain `models_*.go` files: `models.go` (tenancy +
 identity), `models_modelinfra.go`, `models_billing.go`, `models_catalog.go`,
 `models_runtime.go`, and `models_telemetry.go`.
@@ -162,9 +175,10 @@ go test ./internal/store/...
 ```
 
 The database-touching tests live in `integration_test.go`,
-`catalog_integration_test.go`, `runtime_integration_test.go`, and
-`telemetry_integration_test.go` behind the `integration` build tag and **skip**
-when Postgres is unreachable (mirroring `internal/db`):
+`catalog_integration_test.go`, `runtime_integration_test.go`,
+`telemetry_integration_test.go`, and `analytics_test.go` behind the
+`integration` build tag and **skip** when Postgres is unreachable (mirroring
+`internal/db`):
 
 ```sh
 # Uses config.DefaultDatabaseURL (local Docker dev stack) unless DATABASE_URL is set.
