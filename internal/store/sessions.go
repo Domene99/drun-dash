@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -80,6 +81,43 @@ func (s *SessionStore) GetByID(ctx context.Context, id string) (Session, error) 
 func (s *SessionStore) ListByOrg(ctx context.Context, orgID string) ([]Session, error) {
 	const q = `SELECT ` + sessionColumns + ` FROM sessions WHERE org_id = $1 ORDER BY created_at DESC, id`
 	return s.list(ctx, q, orgID, fmt.Sprintf("org %q", orgID))
+}
+
+// ListByOrgPage returns up to limit sessions for orgID ordered by (created_at,
+// id) ascending, starting strictly after the (afterCreatedAt, afterID)
+// position. A zero afterCreatedAt (afterID ignored) starts from the beginning
+// of the list. The caller typically passes limit+1 to detect whether another
+// page exists and to derive the next cursor from the last kept row; this method
+// only runs the seek and returns the rows. It is the keyset-paginated
+// counterpart to [ListByOrg] (which orders newest-first and is left unchanged)
+// per ADR-0002 §3.
+//
+// A non-positive limit is rejected as a programming error: the handler layer is
+// the primary bound (parsing and clamping the query's limit to [1, 200]), so a
+// limit of zero or below reaching the store is a bug, not a request for an
+// empty page.
+func (s *SessionStore) ListByOrgPage(ctx context.Context, orgID string, limit int, afterCreatedAt time.Time, afterID string) ([]Session, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("store: list sessions page for org %q: limit must be positive, got %d", orgID, limit)
+	}
+	q := `SELECT ` + sessionColumns + ` FROM sessions WHERE org_id = $1`
+	args := []any{orgID, limit}
+	if !afterCreatedAt.IsZero() {
+		q += ` AND (created_at, id) > ($3, $4)`
+		args = append(args, afterCreatedAt, afterID)
+	}
+	q += ` ORDER BY created_at, id LIMIT $2`
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list sessions page for org %q: %w", orgID, mapError(err))
+	}
+	sessions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Session, error) {
+		return scanSession(row)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: list sessions page for org %q: %w", orgID, mapError(err))
+	}
+	return sessions, nil
 }
 
 // ListByAgent returns every session that ran agentID, newest first (by

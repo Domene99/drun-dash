@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -59,6 +60,42 @@ func (s *AgentStore) ListByOrg(ctx context.Context, orgID string) ([]Agent, erro
 	})
 	if err != nil {
 		return nil, fmt.Errorf("store: list agents for org %q: %w", orgID, mapError(err))
+	}
+	return agents, nil
+}
+
+// ListByOrgPage returns up to limit agents for orgID ordered by (created_at,
+// id), starting strictly after the (afterCreatedAt, afterID) position. A zero
+// afterCreatedAt (afterID ignored) starts from the beginning of the list. The
+// caller typically passes limit+1 to detect whether another page exists and to
+// derive the next cursor from the last kept row; this method only runs the seek
+// and returns the rows. It is the keyset-paginated counterpart to [ListByOrg]
+// (which orders by name and is left unchanged) per ADR-0002 §3.
+//
+// A non-positive limit is rejected as a programming error: the handler layer is
+// the primary bound (parsing and clamping the query's limit to [1, 200]), so a
+// limit of zero or below reaching the store is a bug, not a request for an
+// empty page.
+func (s *AgentStore) ListByOrgPage(ctx context.Context, orgID string, limit int, afterCreatedAt time.Time, afterID string) ([]Agent, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("store: list agents page for org %q: limit must be positive, got %d", orgID, limit)
+	}
+	q := `SELECT ` + agentColumns + ` FROM agents WHERE org_id = $1`
+	args := []any{orgID, limit}
+	if !afterCreatedAt.IsZero() {
+		q += ` AND (created_at, id) > ($3, $4)`
+		args = append(args, afterCreatedAt, afterID)
+	}
+	q += ` ORDER BY created_at, id LIMIT $2`
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list agents page for org %q: %w", orgID, mapError(err))
+	}
+	agents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Agent, error) {
+		return scanAgent(row)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: list agents page for org %q: %w", orgID, mapError(err))
 	}
 	return agents, nil
 }

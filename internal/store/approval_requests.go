@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -66,6 +67,43 @@ func (s *ApprovalRequestStore) GetByID(ctx context.Context, id string) (Approval
 func (s *ApprovalRequestStore) ListByOrg(ctx context.Context, orgID string) ([]ApprovalRequest, error) {
 	const q = `SELECT ` + approvalRequestColumns + ` FROM approval_requests WHERE org_id = $1 ORDER BY created_at, id`
 	return s.list(ctx, q, orgID, fmt.Sprintf("org %q", orgID))
+}
+
+// ListByOrgPage returns up to limit approval requests for orgID ordered by
+// (created_at, id), starting strictly after the (afterCreatedAt, afterID)
+// position. A zero afterCreatedAt (afterID ignored) starts from the beginning
+// of the list. The caller typically passes limit+1 to detect whether another
+// page exists and to derive the next cursor from the last kept row; this method
+// only runs the seek and returns the rows. It is the keyset-paginated
+// counterpart to [ListByOrg] (which shares the (created_at, id) ordering but
+// returns every row) per ADR-0002 §3.
+//
+// A non-positive limit is rejected as a programming error: the handler layer is
+// the primary bound (parsing and clamping the query's limit to [1, 200]), so a
+// limit of zero or below reaching the store is a bug, not a request for an
+// empty page.
+func (s *ApprovalRequestStore) ListByOrgPage(ctx context.Context, orgID string, limit int, afterCreatedAt time.Time, afterID string) ([]ApprovalRequest, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("store: list approval requests page for org %q: limit must be positive, got %d", orgID, limit)
+	}
+	q := `SELECT ` + approvalRequestColumns + ` FROM approval_requests WHERE org_id = $1`
+	args := []any{orgID, limit}
+	if !afterCreatedAt.IsZero() {
+		q += ` AND (created_at, id) > ($3, $4)`
+		args = append(args, afterCreatedAt, afterID)
+	}
+	q += ` ORDER BY created_at, id LIMIT $2`
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list approval requests page for org %q: %w", orgID, mapError(err))
+	}
+	reqs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ApprovalRequest, error) {
+		return scanApprovalRequest(row)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: list approval requests page for org %q: %w", orgID, mapError(err))
+	}
+	return reqs, nil
 }
 
 // ListPendingByOrg returns the pending approval queue for orgID, oldest first —
