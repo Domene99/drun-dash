@@ -22,6 +22,9 @@ lives here so tests exercise every subcommand in-process with buffers.
 | `whoami`            | real   | 0/1  | Reports the authenticated member via `GET /auth/whoami`, or "Not logged in". |
 | `agents list`       | real   | 0/1  | Lists catalog agents via `GET /agents`, with `--limit`/`--cursor` paging. |
 | `agents get <id>`   | real   | 0/1  | Shows one agent via `GET /agents/{agentId}`; a `404` is a clear not-found. |
+| `policies list`     | real   | 0/1  | Lists policies via `GET /policies`, with `--limit`/`--cursor` paging. |
+| `policies get <id>` | real   | 0/1  | Shows one policy via `GET /policies/{policyId}`; a `404` is a clear not-found. |
+| `policies versions <id>` | real | 0/1 | Lists a policy's signed versions via `GET /policies/{policyId}/versions`, each with its digest. |
 | `sessions list`     | real   | 0/1  | Lists governed sessions via `GET /sessions`, with `--limit`/`--cursor` paging. |
 | `sessions get <id>` | real   | 0/1  | Shows one session via `GET /sessions/{sessionId}`; a `404` is a clear not-found. |
 | `sessions launch --agent <id>` | real | 0/1 | Launches a governed session via `POST /sessions/launch`; prints a summary + one-time `proxy_token`, `--json` dumps the full response; `403` is a clear "not entitled". |
@@ -71,6 +74,31 @@ With no stored token, both print "Not logged in." and exit non-zero without
 sending a request. Any other non-2xx response is surfaced via the flat `Error`
 envelope (`code` + `message`). `--server` overrides the base URL stored with the
 token, exactly as `whoami` does.
+
+## Policies (`policies`)
+
+Read-only access to the organization's policy boundaries and their immutable,
+signed versions, using the same Bearer-token and `--server` mechanism as
+`agents`, against `openapi/v1.yaml`. Create/publish (`POST /policies`,
+`POST /policies/{policyId}/versions`) are deliberately not exposed — the CLI is
+read-only here. All three live in `policies.go`.
+
+- `policies list [--limit N] [--cursor C]` — `GET /policies` (`listPolicies`).
+  Prints the returned `Policy` items as an aligned table (id, name, current
+  version, description). `--limit` / `--cursor` are passed through as query
+  params, and a `next_cursor` yields a "More available — re-run with --cursor …"
+  hint.
+- `policies get <policyId>` — `GET /policies/{policyId}` (`getPolicy`). Prints
+  the policy detail (including its `current_version` pointer); a `404` prints a
+  clear not-found message and exits non-zero.
+- `policies versions <policyId>` — `GET /policies/{policyId}/versions`
+  (`listPolicyVersions`). Lists the policy's signed versions as an aligned table,
+  each row carrying the version number, content `digest`, and signing
+  algorithm/key; a `404` (unknown policy) is a clear not-found.
+
+With no stored token, all three print "Not logged in." and exit non-zero without
+sending a request. Any other non-2xx response is surfaced via the flat `Error`
+envelope.
 
 ## Sessions (`sessions` / `session`)
 
@@ -150,7 +178,7 @@ surfaced via the flat `Error` envelope.
 | Requested scopes | `--scope SCOPES` | — | (none) |
 | Token storage dir | — | `DRUN_DASH_CONFIG_DIR` | `os.UserConfigDir()/drun-dash` |
 
-`whoami`, `agents`, `sessions`, `approvals`, and `spend` accept `--server` to
+`whoami`, `agents`, `policies`, `sessions`, `approvals`, and `spend` accept `--server` to
 override the base URL stored with the token; otherwise they reuse the server
 `login` authenticated against.
 
