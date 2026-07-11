@@ -51,10 +51,22 @@ const (
 	envOIDCIssuer     = "CP_OIDC_ISSUER"
 	envOIDCClientID   = "CP_OIDC_CLIENT_ID"
 
+	// Session-launch settings (ADR-0003): the bundle-signing key and its id,
+	// the proxy base URL handed to launched sessions, and the session lifetime
+	// governing both the bundle and the grant expiry.
+	envBundleSigningSeed = "CP_BUNDLE_SIGNING_SEED"
+	envBundleSigningKID  = "CP_BUNDLE_SIGNING_KID"
+	envProxyBaseURL      = "CP_PROXY_BASE_URL"
+	envSessionTTL        = "CP_SESSION_TTL"
+
 	defaultJWTIssuer      = "drun-dash"
 	defaultJWTAudience    = "drun-dash-api"
 	defaultJWTKID         = "dev"
 	defaultAccessTokenTTL = 15 * time.Minute
+
+	defaultBundleSigningKID = "dev"
+	defaultProxyBaseURL     = "http://localhost:8081"
+	defaultSessionTTL       = 60 * time.Minute
 )
 
 func main() {
@@ -117,7 +129,8 @@ func run() error {
 // revoker, the member store, and the OIDC verifier for the session exchange. It
 // also carries the shared database pool so the resource handlers can build
 // their own stores (store.NewAgentStore(d.Pool), …) without this function
-// growing a field per resource.
+// growing a field per resource, and the session-launch material (bundle-signing
+// key, proxy URL, session TTL).
 //
 // The OIDC verifier requires live discovery against the org's IdP, so it is
 // built only when CP_OIDC_ISSUER and CP_OIDC_CLIENT_ID are both set. When they
@@ -168,6 +181,22 @@ func buildAuthDeps(ctx context.Context, logger *slog.Logger, pool *db.Pool, redi
 		return nil, fmt.Errorf("control-plane: build verifier: %w", err)
 	}
 
+	bundleKey, err := bundleSigningKeyFromEnv(logger)
+	if err != nil {
+		return nil, err
+	}
+	bundleKID := getEnv(envBundleSigningKID, defaultBundleSigningKID)
+	proxyBaseURL := getEnv(envProxyBaseURL, defaultProxyBaseURL)
+
+	sessionTTL := defaultSessionTTL
+	if raw := os.Getenv(envSessionTTL); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("control-plane: %s: %w", envSessionTTL, err)
+		}
+		sessionTTL = parsed
+	}
+
 	oidcIssuer := os.Getenv(envOIDCIssuer)
 	oidcClientID := os.Getenv(envOIDCClientID)
 	if oidcIssuer == "" || oidcClientID == "" {
@@ -186,15 +215,22 @@ func buildAuthDeps(ctx context.Context, logger *slog.Logger, pool *db.Pool, redi
 		slog.String("kid", kid),
 		slog.Duration("access_token_ttl", ttl),
 		slog.String("oidc_issuer", oidcIssuer),
+		slog.String("bundle_kid", bundleKID),
+		slog.String("proxy_base_url", proxyBaseURL),
+		slog.Duration("session_ttl", sessionTTL),
 	)
 
 	return &httpapi.Deps{
-		OIDC:      oidcVerifier,
-		Issuer:    issuer,
-		Verifier:  verifier,
-		Members:   store.NewMemberStore(pool),
-		Pool:      pool,
-		AccessTTL: ttl,
+		OIDC:             oidcVerifier,
+		Issuer:           issuer,
+		Verifier:         verifier,
+		Members:          store.NewMemberStore(pool),
+		Pool:             pool,
+		AccessTTL:        ttl,
+		BundleSigningKey: bundleKey,
+		BundleSigningKID: bundleKID,
+		ProxyBaseURL:     proxyBaseURL,
+		SessionTTL:       sessionTTL,
 	}, nil
 }
 
@@ -204,23 +240,40 @@ func buildAuthDeps(ctx context.Context, logger *slog.Logger, pool *db.Pool, redi
 // not survive a restart, which is fine for dev and unacceptable for production
 // (hence the warning). An explicitly set but malformed seed is a hard error.
 func signingKeyFromEnv(logger *slog.Logger) (ed25519.PrivateKey, error) {
-	raw := os.Getenv(envJWTSigningSeed)
+	return seedKeyFromEnv(logger, envJWTSigningSeed, "signing seed", "tokens will not survive restart")
+}
+
+// bundleSigningKeyFromEnv builds the Ed25519 policy-bundle signing key from
+// CP_BUNDLE_SIGNING_SEED, with the same seed handling as the JWT key: an unset
+// seed yields an ephemeral key (dev convenience; bundles signed with it verify
+// only against the ephemeral public half), and a malformed seed is a hard
+// error. It is a distinct key from the JWT signing key (ADR-0003 §2).
+func bundleSigningKeyFromEnv(logger *slog.Logger) (ed25519.PrivateKey, error) {
+	return seedKeyFromEnv(logger, envBundleSigningSeed, "bundle signing seed", "bundles will not verify across restarts")
+}
+
+// seedKeyFromEnv builds an Ed25519 private key from a base64-encoded 32-byte
+// seed in the named environment variable. An unset variable generates an
+// ephemeral key (logging a warning that names the consequence); a set but
+// malformed seed is a hard error.
+func seedKeyFromEnv(logger *slog.Logger, envVar, label, consequence string) (ed25519.PrivateKey, error) {
+	raw := os.Getenv(envVar)
 	if raw == "" {
-		logger.Warn("no signing seed set; generating an ephemeral key (tokens will not survive restart)",
-			slog.String("hint", fmt.Sprintf("set %s to a base64-encoded 32-byte seed in production", envJWTSigningSeed)))
+		logger.Warn(fmt.Sprintf("no %s set; generating an ephemeral key (%s)", label, consequence),
+			slog.String("hint", fmt.Sprintf("set %s to a base64-encoded 32-byte seed in production", envVar)))
 		_, priv, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
-			return nil, fmt.Errorf("control-plane: generate ephemeral signing key: %w", err)
+			return nil, fmt.Errorf("control-plane: generate ephemeral %s: %w", label, err)
 		}
 		return priv, nil
 	}
 
 	seed, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil {
-		return nil, fmt.Errorf("control-plane: %s: decode base64: %w", envJWTSigningSeed, err)
+		return nil, fmt.Errorf("control-plane: %s: decode base64: %w", envVar, err)
 	}
 	if len(seed) != ed25519.SeedSize {
-		return nil, fmt.Errorf("control-plane: %s: seed must decode to %d bytes, got %d", envJWTSigningSeed, ed25519.SeedSize, len(seed))
+		return nil, fmt.Errorf("control-plane: %s: seed must decode to %d bytes, got %d", envVar, ed25519.SeedSize, len(seed))
 	}
 	return ed25519.NewKeyFromSeed(seed), nil
 }

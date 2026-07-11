@@ -49,6 +49,20 @@ func (s *PolicyVersionStore) Create(ctx context.Context, p CreatePolicyVersionPa
 	return version, nil
 }
 
+// GetByID returns the policy version with the given id, or [ErrNotFound]. It is
+// the lookup the session-launch flow uses to resolve an effective
+// policy_version_id — pinned by an agent version or overridden by an
+// entitlement — back to its stored boundary, without knowing the
+// (policy_id, version) pair.
+func (s *PolicyVersionStore) GetByID(ctx context.Context, id string) (PolicyVersion, error) {
+	const q = `SELECT ` + policyVersionColumns + ` FROM policy_versions WHERE id = $1`
+	v, err := scanPolicyVersion(s.db.QueryRow(ctx, q, id))
+	if err != nil {
+		return PolicyVersion{}, fmt.Errorf("store: policy version by id %q: %w", id, mapError(err))
+	}
+	return v, nil
+}
+
 // GetByPolicyAndVersion returns the given version of policyID, or [ErrNotFound].
 func (s *PolicyVersionStore) GetByPolicyAndVersion(ctx context.Context, policyID string, version int) (PolicyVersion, error) {
 	const q = `SELECT ` + policyVersionColumns + ` FROM policy_versions WHERE policy_id = $1 AND version = $2`
