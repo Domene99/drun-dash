@@ -1,0 +1,23 @@
+# Environment
+.env
+*.env.local
+
+# Go
+/bin/
+/dist/
+*.exe
+*.test
+coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker local overrides
+deploy/docker/.env
