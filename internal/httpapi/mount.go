@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/ed25519"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -32,7 +33,10 @@ type MemberReader interface {
 // Resource handlers (agents, policies, …) do not each add a field here: they
 // build the store they need locally from [Deps.Pool] (e.g.
 // store.NewAgentStore(d.Pool)), so adding a resource is a new handler file plus
-// one line in [Mount] — no change to this struct or to cmd/control-plane.
+// one line in [Mount] — no change to this struct or to cmd/control-plane. The
+// session-launch fields below are the exception: signing a policy bundle and
+// scoping a grant need process-wide material (a key, the proxy URL, the session
+// lifetime) that is not derivable from the request, so they are wired once here.
 type Deps struct {
 	// OIDC verifies the IdP-issued ID token presented to POST /auth/session.
 	OIDC oidc.Verifier
@@ -54,6 +58,24 @@ type Deps struct {
 	// reported verbatim as the TokenResponse.expires_in (in seconds). It must
 	// match the TTL configured on Issuer.
 	AccessTTL time.Duration
+
+	// BundleSigningKey is the control plane's Ed25519 private key for signing
+	// policy bundles at session launch (ADR-0003 §2). It is distinct from the
+	// JWT session-signing key (different purpose and rotation) and its public
+	// half is what proxies and clients verify against. launchSession fails
+	// closed with a 500 when it is not configured.
+	BundleSigningKey ed25519.PrivateKey
+	// BundleSigningKID identifies the bundle-signing key for rotation. It is
+	// not embedded in the pkg/policy bundle (which carries no key id) but is
+	// tracked here for future key distribution.
+	BundleSigningKID string
+	// ProxyBaseURL is the LLM proxy every launched session must route through;
+	// it is echoed verbatim as SessionLaunchResponse.proxy_base_url.
+	ProxyBaseURL string
+	// SessionTTL is the single lifetime that governs both the signed bundle's
+	// expires_at and the credential grant's expires_at (ADR-0003 §4), so a
+	// session cannot outlive its policy or vice versa.
+	SessionTTL time.Duration
 }
 
 // Mount registers the control-plane REST routes on r. Public auth routes are
@@ -81,7 +103,9 @@ func Mount(r chi.Router, deps Deps) {
 		pr.Get("/agents/{agentId}", deps.getAgent)
 
 		pr.Get("/sessions", deps.listSessions)
+		pr.Post("/sessions/launch", deps.launchSession)
 		pr.Get("/sessions/{sessionId}", deps.getSession)
+		pr.Post("/sessions/{sessionId}/terminate", deps.terminateSession)
 
 		pr.Get("/analytics/spend", deps.querySpend)
 		pr.Get("/analytics/budgets", deps.listBudgets)
