@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1
+#
+# Multi-stage image for cmd/control-plane (the drun-dash REST API server).
+#
+# Stage 1 builds a static, CGO-free Linux binary on the official Go image.
+# Stage 2 copies it onto a minimal Alpine runtime and runs it as a non-root
+# user. Build from the repository root so go.mod and ./cmd are in context:
+#
+#   docker build -f deploy/docker/Dockerfile.control-plane -t drundash-control-plane .
+#
+# docker-compose.app.yml already sets the correct build context.
+
+# ---- build stage --------------------------------------------------------
+FROM golang:1.22 AS build
+
+WORKDIR /src
+
+# Download modules first so this layer is cached until go.mod/go.sum change.
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Then copy the source and build the specific command.
+COPY . .
+
+# Optional build-time version stamp: -X main.version.
+ARG VERSION=dev
+
+# CGO disabled -> a fully static binary that runs on Alpine (musl) unchanged.
+RUN CGO_ENABLED=0 GOOS=linux go build \
+        -trimpath \
+        -ldflags "-s -w -X main.version=${VERSION}" \
+        -o /out/control-plane ./cmd/control-plane
+
+# ---- runtime stage ------------------------------------------------------
+FROM alpine:3.20
+
+# ca-certificates: control-plane runs live OIDC discovery over HTTPS.
+# wget (busybox) is used by the compose healthcheck.
+RUN apk add --no-cache ca-certificates
+
+# Run as an unprivileged user (uid mirrors distroless "nonroot").
+RUN addgroup -S app && adduser -S -G app -u 65532 app
+USER app
+
+COPY --from=build /out/control-plane /usr/local/bin/control-plane
+
+# control-plane listens on HTTP_ADDR (default :8080).
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/control-plane"]
