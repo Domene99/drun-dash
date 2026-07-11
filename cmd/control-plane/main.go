@@ -114,7 +114,10 @@ func run() error {
 
 // buildAuthDeps assembles the authentication stack from the environment: the
 // session-token issuer and verifier (sharing one Ed25519 key), the Redis-backed
-// revoker, the member store, and the OIDC verifier for the session exchange.
+// revoker, the member store, and the OIDC verifier for the session exchange. It
+// also carries the shared database pool so the resource handlers can build
+// their own stores (store.NewAgentStore(d.Pool), …) without this function
+// growing a field per resource.
 //
 // The OIDC verifier requires live discovery against the org's IdP, so it is
 // built only when CP_OIDC_ISSUER and CP_OIDC_CLIENT_ID are both set. When they
@@ -190,6 +193,7 @@ func buildAuthDeps(ctx context.Context, logger *slog.Logger, pool *db.Pool, redi
 		Issuer:    issuer,
 		Verifier:  verifier,
 		Members:   store.NewMemberStore(pool),
+		Pool:      pool,
 		AccessTTL: ttl,
 	}, nil
 }
