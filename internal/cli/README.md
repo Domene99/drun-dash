@@ -24,11 +24,16 @@ lives here so tests exercise every subcommand in-process with buffers.
 | `agents get <id>`   | real   | 0/1  | Shows one agent via `GET /agents/{agentId}`; a `404` is a clear not-found. |
 | `sessions list`     | real   | 0/1  | Lists governed sessions via `GET /sessions`, with `--limit`/`--cursor` paging. |
 | `sessions get <id>` | real   | 0/1  | Shows one session via `GET /sessions/{sessionId}`; a `404` is a clear not-found. |
+| `sessions launch --agent <id>` | real | 0/1 | Launches a governed session via `POST /sessions/launch`; prints a summary + one-time `proxy_token`, `--json` dumps the full response; `403` is a clear "not entitled". |
+| `sessions terminate <id>` | real | 0/1 | Terminates a session via `POST /sessions/{sessionId}/terminate` (idempotent); unknown/forbidden surfaces the flat `Error`. |
 | `spend`             | real   | 0/1  | Queries `GET /analytics/spend` with `--from`/`--to`/`--group-by`; prints total + groups. |
 | `config` (`env`)    | real   | 0    | Loads `config.Load()` and prints the resolved runtime configuration. |
 | `version` / `--version` | real | 0 | Prints `Version`. |
 | `help` / `-h` / `--help` | real | 0 | Prints usage listing every subcommand. |
 | no args / unknown   | —      | 2    | Prints usage on stderr. |
+
+The singular `session` is an alias for `sessions`, so `session launch …` and
+`sessions launch …` are equivalent (likewise for `get`, `list`, `terminate`).
 
 ## Authentication (`login` / `whoami`)
 
@@ -65,10 +70,12 @@ sending a request. Any other non-2xx response is surfaced via the flat `Error`
 envelope (`code` + `message`). `--server` overrides the base URL stored with the
 token, exactly as `whoami` does.
 
-## Sessions (`sessions`)
+## Sessions (`sessions` / `session`)
 
-Read-only access to governed agent sessions, using the same Bearer-token and
-`--server` mechanism as `agents`, against `openapi/v1.yaml`:
+Governed agent sessions, using the same Bearer-token and `--server` mechanism as
+`agents`, against `openapi/v1.yaml`. The read-only halves (`list.go`/`get`) live
+in `sessions.go`; the lifecycle halves (`launch`/`terminate`) in
+`session_launch.go`.
 
 - `sessions list [--limit N] [--cursor C]` — `GET /sessions` (`listSessions`).
   Prints the returned `Session` items as an aligned table (session id, agent id,
@@ -78,6 +85,24 @@ Read-only access to governed agent sessions, using the same Bearer-token and
 - `sessions get <sessionId>` — `GET /sessions/{sessionId}` (`getSession`). Prints
   the session detail; a `404` prints a clear not-found message and exits
   non-zero.
+- `sessions launch --agent <id> [--agent-version N] [--fan-out N] [--json]` —
+  `POST /sessions/launch` (`launchSession`). Sends the `SessionLaunchRequest`
+  (`--agent-version` and `--fan-out` are omitted from the body when unset), and
+  on `201` prints a readable summary — session id, proxy base URL, fan-out
+  ceiling, expiry — followed by the scoped **`proxy_token`**. That token is the
+  session's LLM-proxy credential: it is a **secret shown once**, printed to
+  stdout for the operator but never written to any file or log. `--json` dumps
+  the full `SessionLaunchResponse` (including the large `policy_bundle` and the
+  `proxy_token`) as indented JSON for scripting. A `403` prints a clear
+  "not entitled to launch agent …" message and exits non-zero.
+- `sessions terminate <sessionId>` — `POST /sessions/{sessionId}/terminate`
+  (`terminateSession`). Reports success; the endpoint is idempotent once the
+  session is terminal. An unknown or forbidden session surfaces the flat `Error`
+  envelope and exits non-zero.
+
+> The engine-side consumption of the policy bundle (writing it to disk,
+> configuring the local drun engine) is a later batch — for now `launch` only
+> displays / `--json`-dumps the response.
 
 ## Spend (`spend`)
 
@@ -110,13 +135,17 @@ authenticated against.
 ## Testing
 
 Commands are driven against an `httptest` mock of the control-plane endpoints —
-no real network. The device poll loop takes an injectable `clock` so `slow_down`
+no real network (an in-memory `http.RoundTripper` serves the handler, so nothing
+binds a socket). The device poll loop takes an injectable `clock` so `slow_down`
 and expiry are tested deterministically without real sleeps, and the `agents`,
 `sessions`, and `spend` commands assert the Bearer token, query/pagination
 pass-through, the not-found and bad-request paths, and the not-logged-in path.
-Token storage is redirected to a temp dir via `DRUN_DASH_CONFIG_DIR`.
+The `sessions launch`/`terminate` tests additionally assert the POST body,
+the summary vs. `--json` output, the one-time `proxy_token` surfacing, and the
+`403`/flat-`Error` paths. Token storage is redirected to a temp dir via
+`DRUN_DASH_CONFIG_DIR`.
 
 ## Not implemented yet
 
-Policy sync and drun session control are deferred to later batches and marked
+Policy sync and drun engine control are deferred to later batches and marked
 with `// TODO(batch/…)` comments in their stub files.
