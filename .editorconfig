@@ -1,0 +1,40 @@
+# EditorConfig — https://editorconfig.org
+# Formatting defaults for the drun-dash Go monorepo.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Go: gofmt uses tabs; do not trim trailing whitespace inside raw strings.
+[*.go]
+indent_style = tab
+indent_size = 4
+
+# Go module files use tabs.
+[go.mod]
+indent_style = tab
+indent_size = 4
+
+[go.sum]
+indent_style = tab
+indent_size = 4
+
+# Makefiles require literal tabs.
+[Makefile]
+indent_style = tab
+
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{sql,json}]
+indent_style = space
+indent_size = 2
