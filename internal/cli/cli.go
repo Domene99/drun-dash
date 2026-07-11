@@ -45,6 +45,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return loginCmd(args[1:], stdout, stderr)
 	case "whoami":
 		return whoamiCmd(args[1:], stdout, stderr)
+	case "agents":
+		return agentsCmd(args[1:], stdout, stderr)
 	case "config", "env":
 		return configCmd(args[1:], stdout, stderr)
 	default:
@@ -64,6 +66,7 @@ Usage:
 Commands:
   login      Authenticate this machine to the org (device-authorization flow)
   whoami     Show the currently authenticated member
+  agents     List and inspect catalog agents
   config     Print the resolved runtime configuration
   version    Print the CLI version
   help       Show this help text
