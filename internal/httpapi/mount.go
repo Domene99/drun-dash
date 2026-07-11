@@ -79,5 +79,11 @@ func Mount(r chi.Router, deps Deps) {
 		pr.Get("/agents", deps.listAgents)
 		pr.Post("/agents", deps.createAgent)
 		pr.Get("/agents/{agentId}", deps.getAgent)
+
+		pr.Get("/sessions", deps.listSessions)
+		pr.Get("/sessions/{sessionId}", deps.getSession)
+
+		pr.Get("/analytics/spend", deps.querySpend)
+		pr.Get("/analytics/budgets", deps.listBudgets)
 	})
 }
