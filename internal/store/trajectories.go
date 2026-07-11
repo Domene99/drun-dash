@@ -62,6 +62,20 @@ func (s *TrajectoryStore) GetByID(ctx context.Context, id string) (Trajectory, e
 	return traj, nil
 }
 
+// GetBySessionID returns the trajectory recorded for sessionID, or [ErrNotFound]
+// when the session has no trajectory yet. It backs the ingest handler's
+// find-or-create: a session owns a single trajectory in v1, so the query takes
+// the earliest row by (created_at, id) — a stable choice that resolves any stray
+// duplicate deterministically to the original rather than a later one.
+func (s *TrajectoryStore) GetBySessionID(ctx context.Context, sessionID string) (Trajectory, error) {
+	const q = `SELECT ` + trajectoryColumns + ` FROM trajectories WHERE session_id = $1 ORDER BY created_at, id LIMIT 1`
+	traj, err := scanTrajectory(s.db.QueryRow(ctx, q, sessionID))
+	if err != nil {
+		return Trajectory{}, fmt.Errorf("store: trajectory by session %q: %w", sessionID, mapError(err))
+	}
+	return traj, nil
+}
+
 // ListByOrg returns every trajectory for orgID, newest first (by started_at
 // descending, then id for a stable order).
 func (s *TrajectoryStore) ListByOrg(ctx context.Context, orgID string) ([]Trajectory, error) {

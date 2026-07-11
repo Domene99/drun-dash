@@ -17,3 +17,10 @@ func WriteOK(w http.ResponseWriter, v any) {
 func WriteCreated(w http.ResponseWriter, v any) {
 	_ = httpx.WriteJSON(w, http.StatusCreated, v)
 }
+
+// WriteAccepted writes v as a 202 Accepted JSON response, for endpoints that
+// acknowledge a batch taken in for processing rather than a resource created in
+// place — trajectory ingest returns its accepted/rejected tally this way.
+func WriteAccepted(w http.ResponseWriter, v any) {
+	_ = httpx.WriteJSON(w, http.StatusAccepted, v)
+}
