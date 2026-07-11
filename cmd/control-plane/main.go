@@ -1,22 +1,25 @@
 // Command control-plane runs the drun-dash REST API and admin UI server.
 //
-// This is a v1 scaffold: it exposes only a health endpoint and graceful
-// shutdown. Auth, database access, and the admin UI (templ+HTMX) arrive in
-// later batches.
+// This is a v1 scaffold: it exposes only liveness/readiness endpoints and
+// graceful shutdown. Auth, database access, and the admin UI (templ+HTMX)
+// arrive in later batches.
 package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/Domene99/drun-dash/internal/config"
+	"github.com/Domene99/drun-dash/internal/httpserver"
+	"github.com/Domene99/drun-dash/internal/httpx"
 )
 
 // version is overridable at build time via
@@ -24,7 +27,6 @@ import (
 var version = "dev"
 
 func main() {
-	addr := flag.String("addr", ":8080", "address to listen on")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -33,55 +35,51 @@ func main() {
 		return
 	}
 
-	if err := run(*addr); err != nil {
-		log.Fatalf("control-plane: %v", err)
+	if err := run(); err != nil {
+		slog.Error("control-plane exited", slog.Any("error", err))
+		os.Exit(1)
 	}
 }
 
-// run starts the HTTP server on addr and blocks until an interrupt signal is
-// received, then shuts down gracefully.
-func run(addr string) error {
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           newRouter(),
-		ReadHeaderTimeout: 10 * time.Second,
+// run loads configuration, builds the router, and serves until an interrupt or
+// termination signal triggers a graceful shutdown.
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
 	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger.Info("control-plane starting", slog.String("version", version), slog.String("env", cfg.Env))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	errCh := make(chan error, 1)
-	go func() {
-		log.Printf("control-plane %s listening on %s", version, addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-			return
-		}
-		errCh <- nil
-	}()
-
-	select {
-	case err := <-errCh:
-		return err
-	case <-ctx.Done():
-		log.Print("control-plane: shutdown signal received")
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	return httpserver.New(cfg, newRouter(logger), logger).Run(ctx)
 }
 
-// newRouter builds the HTTP router for the control-plane server.
-func newRouter() http.Handler {
+// newRouter builds the HTTP router for the control-plane server, wrapping every
+// route in the shared middleware chain: request IDs, panic recovery, and
+// structured access logging.
+func newRouter(logger *slog.Logger) http.Handler {
 	r := chi.NewRouter()
+	r.Use(httpx.RequestID, httpx.Recoverer(logger), httpx.Logger(logger))
+
 	r.Get("/healthz", healthz)
+	r.Get("/readyz", readyz)
 	return r
 }
 
 // healthz reports server liveness.
 func healthz(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintln(w, `{"status":"ok"}`)
+	_ = httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// readyz reports whether the server is ready to serve traffic. It is static for
+// now and always reports ready.
+//
+// TODO(batch N): check downstream dependencies (database, Redis) and report 503
+// when any are unavailable.
+func readyz(w http.ResponseWriter, _ *http.Request) {
+	_ = httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
