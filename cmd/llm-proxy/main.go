@@ -1,8 +1,11 @@
 // Command llm-proxy runs the drun-dash OpenAI-compatible LLM call broker.
 //
-// This is a v1 scaffold: it exposes a health endpoint and a placeholder broker
-// route (see internal/proxy), plus graceful shutdown. The credential-brokering
-// and provider-routing logic arrives in later batches.
+// It exposes a health endpoint and forwards POST /v1/chat/completions to a
+// single configured upstream (see internal/proxy), gating every call on a
+// per-session credential grant and metering it (ADR-0003 §3/§5), plus graceful
+// shutdown. The grant validation and metering resolve through the shared
+// database pool this command opens; provider-routing across multiple endpoints
+// arrives in a later batch.
 package main
 
 import (
@@ -15,6 +18,7 @@ import (
 	"syscall"
 
 	"github.com/Domene99/drun-dash/internal/config"
+	"github.com/Domene99/drun-dash/internal/db"
 	"github.com/Domene99/drun-dash/internal/httpserver"
 	"github.com/Domene99/drun-dash/internal/log"
 	"github.com/Domene99/drun-dash/internal/proxy"
@@ -39,8 +43,9 @@ func main() {
 	}
 }
 
-// run loads configuration, builds the router, and serves until an interrupt or
-// termination signal triggers a graceful shutdown.
+// run loads configuration, opens the database pool, builds the router, and
+// serves until an interrupt or termination signal triggers a graceful
+// shutdown.
 func run() error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -53,7 +58,17 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	return httpserver.New(proxyServerConfig(cfg), proxy.NewRouter(logger), logger).Run(ctx)
+	// Connect is lazy: it validates the connection string but does not dial, so
+	// this succeeds even when Postgres is momentarily down. The broker's
+	// per-call grant lookup and metering dial the pool on first use; a real
+	// outage surfaces as a 500/failed-metering per request, not a boot failure.
+	pool, err := db.Connect(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	return httpserver.New(proxyServerConfig(cfg), proxy.NewRouter(logger, pool), logger).Run(ctx)
 }
 
 // proxyServerConfig returns a shallow copy of cfg whose HTTPAddr is the proxy's

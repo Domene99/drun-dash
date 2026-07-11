@@ -9,11 +9,13 @@ import (
 )
 
 // testRouter builds the router with a logger that discards output so tests do
-// not spam stdout. Callers that exercise the broker route should set
-// LLM_UPSTREAM_BASE_URL (via t.Setenv) before calling this, since the upstream
-// is read once at construction.
+// not spam stdout. The health and middleware tests never reach the broker
+// route, so a nil pool is sufficient: newBroker builds its stores over it but
+// the grant lookup only runs on POST /v1/chat/completions. Callers that
+// exercise the broker route should set LLM_UPSTREAM_BASE_URL (via t.Setenv)
+// before calling this, since the upstream is read once at construction.
 func testRouter() http.Handler {
-	return NewRouter(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return NewRouter(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 }
 
 func TestHealthz(t *testing.T) {

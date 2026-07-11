@@ -1,21 +1,23 @@
 # internal/proxy
 
 HTTP layer for the `llm-proxy` binary — drun-dash's OpenAI-compatible LLM call
-broker. Every model call routes through the proxy so the control plane can hold
-master credentials, meter spend, and enforce entitlement at the point of each
-call.
+broker. Every model call routes through the proxy so the control plane holds
+master credentials, meters spend, and enforces the per-session credential grant
+at the point of each call.
 
 [`NewRouter`](./router.go) builds a [chi](https://github.com/go-chi/chi) router
 wrapped in the shared [`internal/httpx`](../httpx) middleware chain — request
 IDs, panic recovery, and structured access logging — mirroring
-[`cmd/control-plane`](../../cmd/control-plane).
+[`cmd/control-plane`](../../cmd/control-plane). It takes the shared database
+handle (`store.Querier`, so a `*db.Pool` satisfies it) that the broker's
+per-call grant validation and metering resolve through.
 
 ## Routes
 
 | Method | Path                   | Behavior                                                        |
 | ------ | ---------------------- | -------------------------------------------------------------- |
 | `GET`  | `/healthz`             | `200` `{"status":"ok"}`                                        |
-| `POST` | `/v1/chat/completions` | Reverse-proxy to the configured upstream, injecting the master credential (streaming) |
+| `POST` | `/v1/chat/completions` | Validate the credential grant, reverse-proxy to the upstream (injecting the master credential), stream, and meter |
 
 `/v1/chat/completions` forwards to `<upstream>/v1/chat/completions` and streams
 the response back **unbuffered** (see [`broker`](./broker.go)):
@@ -31,12 +33,32 @@ the response back **unbuffered** (see [`broker`](./broker.go)):
 - the body is flushed as it arrives, so **SSE** streaming responses reach the
   client chunk by chunk instead of being buffered to completion.
 
-### Credential injection
+## Grant validation (ADR-0003 §3)
+
+Every call is gated by a **per-session credential grant** minted at session
+launch (`credential_grants`). The client presents its scoped proxy token as a
+bearer token; the broker, on each request:
+
+1. reads the presented bearer token — missing/malformed → **`401`**;
+2. hashes it (`sha256Hex`, lowercase-hex SHA-256 of the full token — the exact
+   form the launch handler stores) and looks the grant up by hash — unknown →
+   **`401`**;
+3. loads the owning session and rejects **fail-closed** if the grant is revoked,
+   expired, or the session is `terminated`/`failed` → **`401`**;
+4. enforces the grant's `scopes`: the route requires the `chat.completions`
+   operation; a grant that does not authorize it → **`403`**.
+
+Only after all four pass is the call forwarded. The `401`/`403` bodies are flat
+`httpx` error envelopes (`unauthorized` / `forbidden`), matching the OpenAPI
+`Error` contract.
+
+## Credential injection
 
 Credential custody is the platform's core guarantee: the **master upstream key
-lives only in the proxy, never on the client**. On every forwarded request the
-broker resolves the upstream provider credential from the
-[`internal/vault`](../vault) and sets
+lives only in the proxy, never on the client**. The credential to inject is
+selected from the **grant's endpoint** (not a fixed process-wide ref): the
+broker loads `model_endpoints` for `grant.endpoint_id`, resolves its
+`secret_ref` through the [`internal/vault`](../vault), and sets
 
 ```
 Authorization: Bearer <resolved secret>
@@ -48,34 +70,42 @@ presents. The raw secret is never logged (only the non-sensitive `secret_ref`
 is) and never echoed in an error body.
 
 The credential is resolved **per request** (not cached at startup), so rotation
-takes effect immediately and the key is never retained in process state.
+takes effect immediately and the key is never retained in process state. If it
+cannot be resolved (the grant names no endpoint, the endpoint cannot be loaded,
+or the vault has no secret for the ref), the request is **not forwarded** and
+the broker answers `502` `{"code":"upstream_credential_unavailable", ...}`.
 
-Per-agent scoping, budget metering, entitlement checks, and multi-endpoint
-routing remain **out of scope** here — they need the endpoint store and land in
-later batches.
+## Metering (ADR-0003 §5)
 
-### Upstream configuration
+After a successful (`2xx`) forwarded call the broker appends an append-only
+`usage_events` row attributed through the grant: `org_id` and `agent_id` from
+the session, `endpoint_id` from the grant, and `prompt_tokens`/
+`completion_tokens`/`model` read from the upstream response body — both the
+non-streamed JSON `usage` object and the trailing `usage` event of an SSE stream
+(when the client opted into it) are recognized. Metering is best-effort: a
+response that reports no usage records nothing, and a write failure is logged,
+not surfaced to the client. This is the metering **seam**; budget enforcement is
+a later batch.
 
-The upstream base URL and the vault `secret_ref` are read from the environment,
-not from [`internal/config`](../config) (which is frozen and has no upstream
-field):
+## Upstream configuration
 
-| Variable                  | Meaning                                             |
-| ------------------------- | --------------------------------------------------- |
-| `LLM_UPSTREAM_BASE_URL`   | Base URL of the upstream provider (scheme + host, optional path prefix), e.g. `https://api.openai.com` for OpenAI. |
-| `LLM_UPSTREAM_SECRET_REF` | Vault ref for the master credential to inject. Defaults to `vault://dev/anthropic`. Under the dev [`EnvVault`](../vault) backend it maps to `DRUNDASH_SECRET_ANTHROPIC`. |
+The upstream base URL is read from the environment, not from
+[`internal/config`](../config) (which is frozen and has no upstream field):
+
+| Variable                | Meaning                                             |
+| ----------------------- | --------------------------------------------------- |
+| `LLM_UPSTREAM_BASE_URL` | Base URL of the upstream provider (scheme + host, optional path prefix), e.g. `https://api.openai.com` for OpenAI. |
 
 `LLM_UPSTREAM_BASE_URL` is validated **once** at router construction. If it is
 unset or invalid (missing/unsupported scheme, no host), the server still starts
 and `/healthz` stays up, but the broker route answers `502` with a flat
 `{"code":"upstream_unconfigured", ...}` envelope rather than forwarding to a
-surprise default.
+surprise default. A dial or transport failure while forwarding yields `502`
+`{"code":"bad_gateway", ...}`.
 
-If the master credential cannot be resolved from the vault (missing or invalid
-`secret_ref`), the request is **not forwarded** and the broker answers `502`
-`{"code":"upstream_credential_unavailable", ...}` — never leaking the secret or
-forwarding without a credential. A dial or transport failure while forwarding
-yields `502` `{"code":"bad_gateway", ...}`.
+The upstream *destination* remains a single configured host; the upstream
+*credential* is now per-grant (above). Multi-endpoint routing (selecting the
+destination per endpoint) lands in a later batch.
 
 ## Usage
 
@@ -83,17 +113,24 @@ yields `502` `{"code":"bad_gateway", ...}`.
 import (
 	"log/slog"
 
+	"github.com/Domene99/drun-dash/internal/db"
 	"github.com/Domene99/drun-dash/internal/proxy"
 )
 
-var logger *slog.Logger // from internal/log
-handler := proxy.NewRouter(logger)
+var (
+	logger *slog.Logger // from internal/log
+	pool   *db.Pool     // from internal/db
+)
+handler := proxy.NewRouter(logger, pool)
 ```
 
 The binary in [`cmd/llm-proxy`](../../cmd/llm-proxy) serves this handler with
 [`internal/httpserver`](../httpserver) on `PROXY_HTTP_ADDR` (default `:8081`).
-Set the upstream base URL and provide the master credential the `secret_ref`
-maps to before starting it:
+It opens the shared database pool (`DATABASE_URL`) for grant validation and
+metering. Set the upstream base URL and provide the master credential the
+endpoint's `secret_ref` maps to before starting it — under the dev
+[`EnvVault`](../vault) backend `vault://dev/anthropic` maps to
+`DRUNDASH_SECRET_ANTHROPIC`:
 
 ```sh
 LLM_UPSTREAM_BASE_URL=https://api.openai.com \
