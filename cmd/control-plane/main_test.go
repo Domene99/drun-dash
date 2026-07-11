@@ -1,17 +1,24 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/Domene99/drun-dash/internal/health"
 )
 
 // testRouter builds the router with a logger that discards output so tests do
-// not spam stdout.
-func testRouter() http.Handler {
-	return newRouter(slog.New(slog.NewTextHandler(io.Discard, nil)))
+// not spam stdout, plus any readiness checkers the test wants wired into
+// /readyz.
+func testRouter(checkers ...health.Named) http.Handler {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return newRouter(logger, checkers...)
 }
 
 func TestHealthz(t *testing.T) {
@@ -31,14 +38,49 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
-func TestReadyz(t *testing.T) {
+// TestReadyzReady wires a fake passing checker and expects a 200 ready body.
+func TestReadyzReady(t *testing.T) {
+	checker := health.CheckerFunc(func(context.Context) error { return nil })
+
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 
-	testRouter().ServeHTTP(rec, req)
+	testRouter(health.Named{Name: "database", Checker: checker}).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != `{"status":"ready"}` {
+		t.Errorf("body = %q, want %q", body, `{"status":"ready"}`)
+	}
+}
+
+// TestReadyzNotReady wires a failing checker and expects a 503 whose flat error
+// body names the failed dependency.
+func TestReadyzNotReady(t *testing.T) {
+	checker := health.CheckerFunc(func(context.Context) error { return context.DeadlineExceeded })
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	testRouter(health.Named{Name: "database", Checker: checker}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+
+	var body struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Code != health.CodeNotReady {
+		t.Errorf("code = %q, want %q", body.Code, health.CodeNotReady)
+	}
+	if !strings.Contains(body.Message, "database") {
+		t.Errorf("message = %q, want it to name the failed dependency", body.Message)
 	}
 }
 
