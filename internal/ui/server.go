@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,13 +40,15 @@ type ctxKey int
 
 const tokenCtxKey ctxKey = iota
 
-// Server is the admin-ui HTTP handler: a chi router serving the login page, the
-// dashboard, the governance pages (sessions, spend, approvals), and a health
-// check, backed by a control-plane [Client]. Construct it with [New]; it
-// implements [http.Handler].
+// Server is the admin-ui HTTP handler: a chi router serving the login and OIDC
+// callback endpoints, the dashboard, the governance pages (sessions, spend,
+// approvals), the CLI device-approval page, and a health check, backed by a
+// control-plane [Client]. Construct it with [New]; it implements
+// [http.Handler].
 type Server struct {
 	client       *Client
 	logger       *slog.Logger
+	oidc         *OIDCAuthenticator
 	secureCookie bool
 	now          func() time.Time
 	router       chi.Router
@@ -59,6 +62,13 @@ type Option func(*Server)
 // Secure cookie would never be sent back.
 func WithSecureCookie(secure bool) Option {
 	return func(s *Server) { s.secureCookie = secure }
+}
+
+// WithOIDC enables the OIDC authorization-code browser login. When set, GET
+// /login redirects to the identity provider and GET /callback completes the
+// exchange; when nil, the server keeps the paste-a-token dev login.
+func WithOIDC(a *OIDCAuthenticator) Option {
+	return func(s *Server) { s.oidc = a }
 }
 
 // WithClock overrides the wall clock used to compute the spend window. Tests
@@ -91,15 +101,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.router.ServeHTTP(w, r)
 }
 
-// routes builds the chi router. Health and the login endpoints are public; the
-// dashboard, the governance pages, and the HTMX fragment/action sit behind
-// requireAuth, which redirects to /login when the session cookie is absent.
+// routes builds the chi router. Health, the login endpoints, and the OIDC
+// callback are public; the dashboard, the governance pages, the device-approval
+// page, and the HTMX fragment/action sit behind requireAuth, which redirects to
+// /login when the session cookie is absent.
 func (s *Server) routes() chi.Router {
 	r := chi.NewRouter()
 
 	r.Get("/healthz", s.handleHealthz)
-	r.Get("/login", s.handleLoginPage)
+	r.Get("/login", s.handleLogin)
 	r.Post("/login", s.handleLoginSubmit)
+	r.Get("/callback", s.handleCallback)
 	r.Post("/logout", s.handleLogout)
 
 	r.Group(func(r chi.Router) {
@@ -111,6 +123,8 @@ func (s *Server) routes() chi.Router {
 		r.Get("/spend", s.handleSpend)
 		r.Get("/approvals", s.handleApprovals)
 		r.Post("/approvals/{id}/decision", s.handleApprovalDecision)
+		r.Get("/device", s.handleDevicePage)
+		r.Post("/device", s.handleDeviceSubmit)
 	})
 
 	return r
@@ -125,14 +139,31 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	_, _ = io.WriteString(w, `{"status":"ok"}`)
 }
 
-// handleLoginPage renders the sign-in form.
-func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, r, http.StatusOK, views.Login(views.LoginData{}))
+// handleLogin begins sign-in. With OIDC configured it mints a state token and
+// PKCE verifier, stores them in transient cookies, and redirects the browser to
+// the identity provider's authorize URL. Without OIDC it renders the
+// paste-a-token dev form.
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if s.oidc == nil {
+		s.render(w, r, http.StatusOK, views.Login(views.LoginData{}))
+		return
+	}
+
+	authURL, state, verifier, err := s.oidc.StartLogin()
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "admin-ui: start oidc login", slog.Any("error", err))
+		s.renderLoginError(w, r, "Could not start sign-in. Please try again.")
+		return
+	}
+	s.setTransientCookie(w, oidcStateCookie, state)
+	s.setTransientCookie(w, oidcVerifierCookie, verifier)
+	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
-// handleLoginSubmit reads the pasted session token from the form, stores it in
-// the session cookie, and redirects to the dashboard. An empty token re-renders
-// the form with an error and a 400.
+// handleLoginSubmit is the paste-a-token dev fallback: it reads a control-plane
+// session token from the form, stores it in the session cookie, and redirects
+// to the dashboard. An empty token re-renders the form with an error and a 400.
+// It stays available so local development works without an identity provider.
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.render(w, r, http.StatusBadRequest, views.Login(views.LoginData{Error: "Could not read the submitted form."}))
@@ -144,14 +175,66 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   s.secureCookie,
-		SameSite: http.SameSiteLaxMode,
-	})
+	s.setSessionCookie(w, token)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// handleCallback completes the OIDC authorization-code flow: it validates the
+// CSRF state against the transient cookie, exchanges the code (with the PKCE
+// verifier) for the ID token, hands the ID token to the control plane's
+// /auth/session for a session JWT, stores that JWT in the session cookie, and
+// lands on the dashboard. Any failure clears the transient cookies and renders
+// the login page with a readable message.
+func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
+	if s.oidc == nil {
+		s.redirectToLogin(w, r)
+		return
+	}
+
+	q := r.URL.Query()
+
+	// The transient cookies are single-use; clear them regardless of outcome.
+	stateCookie, stateErr := r.Cookie(oidcStateCookie)
+	verifierCookie, verifierErr := r.Cookie(oidcVerifierCookie)
+	s.clearTransientCookie(w, oidcStateCookie)
+	s.clearTransientCookie(w, oidcVerifierCookie)
+
+	if errCode := q.Get("error"); errCode != "" {
+		s.renderLoginError(w, r, "The identity provider reported an error: "+errCode)
+		return
+	}
+
+	state := q.Get("state")
+	if stateErr != nil || state == "" || stateCookie.Value == "" ||
+		subtle.ConstantTimeCompare([]byte(state), []byte(stateCookie.Value)) != 1 {
+		s.renderLoginError(w, r, "Sign-in could not be verified (state mismatch). Please try again.")
+		return
+	}
+	if verifierErr != nil || verifierCookie.Value == "" {
+		s.renderLoginError(w, r, "Sign-in could not be verified (missing verifier). Please try again.")
+		return
+	}
+	code := q.Get("code")
+	if code == "" {
+		s.renderLoginError(w, r, "The identity provider did not return an authorization code.")
+		return
+	}
+
+	idToken, err := s.oidc.Exchange(r.Context(), code, verifierCookie.Value)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "admin-ui: oidc code exchange failed", slog.Any("error", err))
+		s.renderLoginError(w, r, "Could not complete sign-in with the identity provider.")
+		return
+	}
+
+	sessionJWT, err := s.client.ExchangeSession(r.Context(), idToken, s.oidc.orgID)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "admin-ui: session exchange failed", slog.Any("error", err))
+		s.renderLoginError(w, r, "The control plane rejected the sign-in: "+readableError(err))
+		return
+	}
+
+	s.setSessionCookie(w, sessionJWT)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -159,6 +242,62 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	s.clearSessionCookie(w)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+// handleDevicePage renders the CLI device-approval confirmation page. It shows
+// the user_code from the query so the operator can confirm it matches the one
+// in their terminal before approving. It sits behind requireAuth so only a
+// signed-in member can approve a device. A missing code renders an inline
+// message instead of an actionable form.
+func (s *Server) handleDevicePage(w http.ResponseWriter, r *http.Request) {
+	userCode := strings.TrimSpace(r.URL.Query().Get("user_code"))
+	data := views.DeviceData{UserCode: userCode}
+	if userCode == "" {
+		data.Error = "Missing device code. Return to your terminal and start the login again."
+	}
+	s.render(w, r, http.StatusOK, views.Device(data))
+}
+
+// handleDeviceSubmit records the operator's approve/deny decision for a CLI
+// device-authorization request via the control plane's /auth/device/approve,
+// then renders a confirmation. A rejected session token redirects to /login;
+// any other control-plane error is surfaced on the page.
+func (s *Server) handleDeviceSubmit(w http.ResponseWriter, r *http.Request) {
+	token := tokenFromContext(r.Context())
+
+	if err := r.ParseForm(); err != nil {
+		s.render(w, r, http.StatusBadRequest, views.Device(views.DeviceData{Error: "Could not read the submitted form."}))
+		return
+	}
+	userCode := strings.TrimSpace(r.PostFormValue("user_code"))
+	decision := strings.TrimSpace(r.PostFormValue("decision"))
+	if userCode == "" {
+		s.render(w, r, http.StatusBadRequest, views.Device(views.DeviceData{Error: "Missing device code."}))
+		return
+	}
+	if decision != "approve" && decision != "deny" {
+		s.render(w, r, http.StatusBadRequest, views.Device(views.DeviceData{UserCode: userCode, Error: "Invalid decision."}))
+		return
+	}
+
+	if err := s.client.ApproveDevice(r.Context(), token, userCode, decision); err != nil {
+		if errors.Is(err, ErrUnauthorized) {
+			s.redirectToLogin(w, r)
+			return
+		}
+		s.logger.ErrorContext(r.Context(), "admin-ui: device approve failed", slog.Any("error", err))
+		s.render(w, r, http.StatusOK, views.Device(views.DeviceData{
+			UserCode: userCode,
+			Error:    "Could not record the decision: " + readableError(err),
+		}))
+		return
+	}
+
+	s.render(w, r, http.StatusOK, views.Device(views.DeviceData{
+		UserCode: userCode,
+		Done:     true,
+		Approved: decision == "approve",
+	}))
 }
 
 // handleDashboard renders the authenticated landing page. A token the control
@@ -412,6 +551,13 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	})
 }
 
+// renderLoginError renders the login page with a message. It reflects the OIDC
+// mode so the page offers the identity-provider button (rather than the dev
+// form) when the browser flow is configured.
+func (s *Server) renderLoginError(w http.ResponseWriter, r *http.Request, msg string) {
+	s.render(w, r, http.StatusOK, views.Login(views.LoginData{OIDC: s.oidc != nil, Error: msg}))
+}
+
 // redirectToLogin clears any stale cookie and sends the client to /login.
 func (s *Server) redirectToLogin(w http.ResponseWriter, r *http.Request) {
 	s.clearSessionCookie(w)
@@ -427,10 +573,50 @@ func (s *Server) hxRedirectToLogin(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// setSessionCookie stores token in the HttpOnly session cookie.
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.secureCookie,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
 // clearSessionCookie expires the session cookie on the client.
 func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.secureCookie,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+// setTransientCookie stores a short-lived, HttpOnly value used only across the
+// IdP redirect (the CSRF state or the PKCE verifier). SameSite=Lax lets it ride
+// the top-level GET navigation back from the identity provider.
+func (s *Server) setTransientCookie(w http.ResponseWriter, name, value string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.secureCookie,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(oidcLoginTTL / time.Second),
+	})
+}
+
+// clearTransientCookie expires a transient login cookie on the client.
+func (s *Server) clearTransientCookie(w http.ResponseWriter, name string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
@@ -604,7 +790,7 @@ func trajectoryRows(events []TrajectoryEvent) []views.TrajectoryRow {
 			FieldClass: e.FieldClass,
 			Occurred:   e.OccurredAt,
 			Depth:      depth,
-			Indent:     strings.Repeat("\u2014 ", depth),
+			Indent:     strings.Repeat("— ", depth),
 		})
 		for _, c := range children[e.EventID] {
 			walk(c, depth+1)
@@ -621,7 +807,7 @@ func trajectoryRows(events []TrajectoryEvent) []views.TrajectoryRow {
 // type and byte size, so an operator can see the shape without the raw data.
 func trajectorySummary(fields []TrajectoryField) string {
 	if len(fields) == 0 {
-		return "\u2014"
+		return "—"
 	}
 	parts := make([]string, 0, len(fields))
 	for _, f := range fields {
@@ -650,7 +836,7 @@ func summarizeValue(raw json.RawMessage) string {
 		s = str
 	}
 	if len(s) > max {
-		s = s[:max] + "\u2026"
+		s = s[:max] + "…"
 	}
 	return s
 }

@@ -9,18 +9,23 @@ import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
 // LoginData is the view model for the login page. Error, when non-empty, holds
-// a human-readable message explaining why a prior sign-in attempt failed (an
-// empty token, or a token the control plane rejected).
+// a human-readable message explaining why a prior sign-in attempt failed. OIDC
+// selects the page's mode: when true the page offers a "sign in with your
+// identity provider" button (the authorization-code browser flow); when false
+// it renders the paste-a-token dev form used when OIDC is not configured.
 type LoginData struct {
 	// Error is shown as an alert above the form when non-empty.
 	Error string
+	// OIDC selects the identity-provider button over the dev paste-token form.
+	OIDC bool
 }
 
-// Login renders the sign-in page. For this bounded v1 shell the operator pastes
-// a control-plane session token obtained out-of-band (via `drun-dash login` or
-// POST /auth/session); the server stores it in a secure, HttpOnly cookie. The
-// full OIDC authorization-code browser flow is a documented follow-up (see
-// internal/ui/README.md).
+// Login renders the sign-in page. With OIDC configured the operator is normally
+// redirected straight to the identity provider by GET /login; this page is
+// shown to offer a retry button after a failed callback. Without OIDC the page
+// renders the paste-a-token dev form: the operator obtains a control-plane
+// session token out-of-band (via `drun-dash login` or POST /auth/session) and
+// the server stores it in a secure, HttpOnly cookie.
 func Login(data LoginData) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -54,7 +59,7 @@ func Login(data LoginData) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<section class=\"card\"><h1>Sign in</h1><p class=\"muted\">Paste a control-plane session token to open the dashboard. Obtain one out-of-band with <code>drun-dash login</code> or by calling <code>POST /auth/session</code>.</p>")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<section class=\"card\"><h1>Sign in</h1>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -77,7 +82,18 @@ func Login(data LoginData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<form method=\"post\" action=\"/login\" class=\"signin\"><label for=\"token\">Session token</label> <textarea id=\"token\" name=\"token\" rows=\"4\" required autofocus placeholder=\"eyJhbGciOi...\"></textarea> <button type=\"submit\">Sign in</button></form></section>")
+			if data.OIDC {
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<p class=\"muted\">Sign in with your organization's identity provider to open the dashboard.</p><p><a class=\"button\" href=\"/login\">Sign in with your identity provider</a></p>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			} else {
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<p class=\"muted\">Paste a control-plane session token to open the dashboard. Obtain one out-of-band with <code>drun-dash login</code> or by calling <code>POST /auth/session</code>.</p><form method=\"post\" action=\"/login\" class=\"signin\"><label for=\"token\">Session token</label> <textarea id=\"token\" name=\"token\" rows=\"4\" required autofocus placeholder=\"eyJhbGciOi...\"></textarea> <button type=\"submit\">Sign in</button></form>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</section>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

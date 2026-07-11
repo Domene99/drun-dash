@@ -2,16 +2,27 @@
 //
 // It is a separate binary from the control plane: it renders a login page and a
 // dashboard (Go + templ + HTMX) and reads live data from the control-plane REST
-// API over HTTP, never importing control-plane packages. The operator signs in
-// by pasting a control-plane session token, which is stored in a secure,
-// HttpOnly cookie and forwarded as a Bearer credential.
+// API over HTTP, never importing control-plane packages. Members sign in
+// through the OIDC authorization-code browser flow; the minted control-plane
+// session JWT is stored in a secure, HttpOnly cookie and forwarded as a Bearer
+// credential. When OIDC is not configured the UI falls back to a paste-a-token
+// dev login so local development still works.
 //
 // Configuration mirrors the other binaries: shared settings come from
-// [config.Load]; the two admin-ui-specific settings come straight from the
+// [config.Load]; the admin-ui-specific settings come straight from the
 // environment (internal/config is shared and not extended per-binary):
 //
-//   - ADMIN_UI_HTTP_ADDR    listen address (default :8082)
-//   - CONTROL_PLANE_BASE_URL control-plane base URL (default http://localhost:8080)
+//   - ADMIN_UI_HTTP_ADDR       listen address (default :8082)
+//   - CONTROL_PLANE_BASE_URL   control-plane base URL (default http://localhost:8080)
+//   - OIDC_ISSUER              identity-provider issuer URL (enables OIDC login)
+//   - OIDC_CLIENT_ID           registered OAuth client ID
+//   - OIDC_CLIENT_SECRET       OAuth client secret (confidential clients)
+//   - ADMIN_UI_REDIRECT_URL    this app's /callback URL registered with the IdP
+//   - DEFAULT_ORGANIZATION_ID  org forwarded to the control plane's /auth/session
+//
+// The OIDC group is optional: when OIDC_ISSUER, OIDC_CLIENT_ID, and
+// ADMIN_UI_REDIRECT_URL are all set the browser flow is enabled, otherwise the
+// paste-a-token dev login stays active.
 package main
 
 import (
@@ -35,9 +46,9 @@ import (
 var version = "dev"
 
 // Admin-ui environment variables and their defaults. internal/config is shared
-// by every binary and not extended per-binary, so the admin UI reads its two
+// by every binary and not extended per-binary, so the admin UI reads its own
 // settings straight from the environment (documented in cmd/admin-ui and
-// internal/ui/README.md).
+// internal/ui/README.md). The OIDC settings are read by ui.OIDCConfigFromEnv.
 const (
 	envAdminUIHTTPAddr  = "ADMIN_UI_HTTP_ADDR"
 	envControlPlaneBase = "CONTROL_PLANE_BASE_URL"
@@ -61,9 +72,9 @@ func main() {
 	}
 }
 
-// run loads configuration, builds the control-plane client and UI handler, and
-// serves until an interrupt or termination signal triggers a graceful
-// shutdown.
+// run loads configuration, builds the control-plane client and UI handler
+// (wiring the OIDC authenticator when configured), and serves until an
+// interrupt or termination signal triggers a graceful shutdown.
 func run() error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -89,9 +100,27 @@ func run() error {
 	defer stop()
 
 	client := ui.NewClient(baseURL, nil)
+
 	// Secure cookies require HTTPS; enable them only in production so plain-HTTP
 	// local development still works.
-	handler := ui.New(client, logger, ui.WithSecureCookie(cfg.IsProduction()))
+	opts := []ui.Option{ui.WithSecureCookie(cfg.IsProduction())}
+
+	oidcCfg := ui.OIDCConfigFromEnv()
+	if oidcCfg.Enabled() {
+		authr, err := ui.NewOIDCAuthenticator(ctx, oidcCfg)
+		if err != nil {
+			return fmt.Errorf("admin-ui: configure oidc: %w", err)
+		}
+		opts = append(opts, ui.WithOIDC(authr))
+		logger.Info("admin-ui: OIDC authorization-code login enabled",
+			slog.String("oidc_issuer", oidcCfg.Issuer),
+			slog.String("redirect_url", oidcCfg.RedirectURL),
+		)
+	} else {
+		logger.Warn("admin-ui: OIDC not configured; using paste-a-token dev login")
+	}
+
+	handler := ui.New(client, logger, opts...)
 
 	return httpserver.New(adminServerConfig(cfg, adminAddr), handler, logger).Run(ctx)
 }

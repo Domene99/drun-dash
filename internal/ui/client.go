@@ -3,11 +3,13 @@
 //
 // The admin UI is a separate binary from the control plane and never imports
 // control-plane packages; it talks to the control plane over HTTP through
-// [Client]. Operators authenticate by pasting a control-plane session token on
-// the login page; the server stores it in a secure, HttpOnly cookie and
-// attaches it as an Authorization: Bearer header on every API call (see
-// server.go). The full OIDC authorization-code browser flow is a documented
-// follow-up (see README.md).
+// [Client]. Members sign in through the OIDC authorization-code browser flow
+// (see oidc.go): the admin UI redirects to the identity provider, handles the
+// callback, and exchanges the verified ID token for a control-plane session JWT
+// via [Client.ExchangeSession] (POST /auth/session). The JWT is stored in a
+// secure, HttpOnly cookie and attached as an Authorization: Bearer header on
+// every subsequent API call (see server.go). When OIDC is not configured the UI
+// falls back to a paste-a-token dev login for local development.
 package ui
 
 import (
@@ -89,6 +91,15 @@ type Identity struct {
 	OrganizationID string   `json:"organization_id"`
 	Email          string   `json:"email,omitempty"`
 	Roles          []string `json:"roles"`
+}
+
+// TokenResponse mirrors the TokenResponse schema (POST /auth/session and the
+// device-token grant): the minted control-plane Bearer JWT plus its metadata.
+type TokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int    `json:"expires_in"`
+	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
 // Agent mirrors the Agent schema. LatestVersion is a pointer so "no published
@@ -211,6 +222,40 @@ type TrajectoryEventList struct {
 	NextCursor string            `json:"next_cursor,omitempty"`
 }
 
+// ExchangeSession calls POST /auth/session, handing the control plane the OIDC
+// ID token the admin UI obtained from the identity provider (and the admin's
+// organization) in exchange for a control-plane session JWT. The endpoint is
+// unauthenticated — the ID token is the credential — so no Bearer token is
+// sent; the control plane verifies the ID token's signature and claims. It
+// returns the access_token from the [TokenResponse].
+func (c *Client) ExchangeSession(ctx context.Context, idToken, orgID string) (string, error) {
+	body := struct {
+		IDToken        string `json:"id_token"`
+		OrganizationID string `json:"organization_id,omitempty"`
+	}{IDToken: idToken, OrganizationID: orgID}
+	var tr TokenResponse
+	if err := c.postJSON(ctx, "", "/auth/session", body, &tr); err != nil {
+		return "", err
+	}
+	if tr.AccessToken == "" {
+		return "", errors.New("ui: /auth/session returned no access_token")
+	}
+	return tr.AccessToken, nil
+}
+
+// ApproveDevice calls POST /auth/device/approve to approve or deny a pending
+// CLI device-authorization request, identified by the user_code the operator
+// confirmed in the browser. decision must be "approve" or "deny". The member's
+// session token authorizes the call; any 2xx response is success. This is the
+// step that completes the CLI `drun-dash login` device flow.
+func (c *Client) ApproveDevice(ctx context.Context, token, userCode, decision string) error {
+	body := struct {
+		UserCode string `json:"user_code"`
+		Decision string `json:"decision"`
+	}{UserCode: userCode, Decision: decision}
+	return c.postJSON(ctx, token, "/auth/device/approve", body, nil)
+}
+
 // Whoami calls GET /auth/whoami and returns the authenticated identity.
 func (c *Client) Whoami(ctx context.Context, token string) (*Identity, error) {
 	var id Identity
@@ -313,9 +358,10 @@ func (c *Client) GetSessionTrajectory(ctx context.Context, token, sessionID stri
 	return &list, nil
 }
 
-// getJSON issues an authenticated GET to path (with optional query params) and
-// decodes a 200 body into dst. A 401 maps to [ErrUnauthorized]; any other
-// non-200 maps to an [*APIError] carrying the flat Error envelope when present.
+// getJSON issues a GET to path (with optional query params) and decodes a 2xx
+// body into dst. An empty token omits the Authorization header. A 401 maps to
+// [ErrUnauthorized]; any other non-2xx maps to an [*APIError] carrying the flat
+// Error envelope when present.
 func (c *Client) getJSON(ctx context.Context, token, path string, query url.Values, dst any) error {
 	u := c.baseURL + path
 	if len(query) > 0 {
@@ -326,15 +372,19 @@ func (c *Client) getJSON(ctx context.Context, token, path string, query url.Valu
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	return c.do(req, path, dst)
 }
 
-// postJSON issues an authenticated POST to path with a JSON request body and
-// decodes a 200 body into dst. Status mapping mirrors [Client.getJSON]: 401
-// maps to [ErrUnauthorized]; any other non-200 maps to an [*APIError].
+// postJSON issues a POST to path with a JSON request body and decodes a 2xx
+// body into dst (dst may be nil when the response body is not needed). An empty
+// token omits the Authorization header, for the unauthenticated /auth/session
+// exchange. Status mapping mirrors [Client.getJSON]: 401 maps to
+// [ErrUnauthorized]; any other non-2xx maps to an [*APIError].
 func (c *Client) postJSON(ctx context.Context, token, path string, reqBody, dst any) error {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
@@ -344,15 +394,19 @@ func (c *Client) postJSON(ctx context.Context, token, path string, reqBody, dst 
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 
 	return c.do(req, path, dst)
 }
 
-// do performs req, reads a bounded response body, and decodes a 200 into dst.
-// It centralizes the status-to-error mapping shared by getJSON and postJSON.
+// do performs req, reads a bounded response body, and decodes a 2xx into dst
+// (when dst is non-nil). It centralizes the status-to-error mapping shared by
+// getJSON and postJSON: 401 maps to [ErrUnauthorized]; any other non-2xx maps
+// to an [*APIError].
 func (c *Client) do(req *http.Request, path string, dst any) error {
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -365,7 +419,10 @@ func (c *Client) do(req *http.Request, path string, dst any) error {
 	}
 
 	switch {
-	case resp.StatusCode == http.StatusOK:
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		if dst == nil {
+			return nil
+		}
 		if err := json.Unmarshal(body, dst); err != nil {
 			return fmt.Errorf("ui: decode %s response: %w", path, err)
 		}
