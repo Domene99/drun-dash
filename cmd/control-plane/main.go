@@ -1,12 +1,16 @@
 // Command control-plane runs the drun-dash REST API and admin UI server.
 //
-// This is a v1 scaffold: it exposes liveness/readiness endpoints and graceful
-// shutdown. Readiness is backed by a database ping; auth and the admin UI
-// (templ+HTMX) arrive in later batches.
+// This is a v1 scaffold: it exposes liveness/readiness endpoints, the
+// authentication vertical (POST /auth/session and GET /auth/whoami), and
+// graceful shutdown. Readiness is backed by a database ping; the admin UI
+// (templ+HTMX) and resource handlers arrive in later batches.
 package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -14,20 +18,44 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Domene99/drun-dash/internal/auth"
 	"github.com/Domene99/drun-dash/internal/config"
 	"github.com/Domene99/drun-dash/internal/db"
 	"github.com/Domene99/drun-dash/internal/health"
+	"github.com/Domene99/drun-dash/internal/httpapi"
 	"github.com/Domene99/drun-dash/internal/httpserver"
 	"github.com/Domene99/drun-dash/internal/httpx"
 	"github.com/Domene99/drun-dash/internal/log"
+	"github.com/Domene99/drun-dash/internal/oidc"
+	"github.com/Domene99/drun-dash/internal/redis"
+	"github.com/Domene99/drun-dash/internal/store"
 )
 
 // version is overridable at build time via
 // -ldflags "-X main.version=<value>".
 var version = "dev"
+
+// Auth environment variables and their defaults. internal/config is frozen for
+// this batch, so the control plane reads its auth settings straight from the
+// environment (documented in cmd/control-plane/README.md).
+const (
+	envJWTIssuer      = "CP_JWT_ISSUER"
+	envJWTAudience    = "CP_JWT_AUDIENCE"
+	envJWTKID         = "CP_JWT_KID"
+	envJWTSigningSeed = "CP_JWT_SIGNING_SEED"
+	envAccessTokenTTL = "CP_ACCESS_TOKEN_TTL"
+	envOIDCIssuer     = "CP_OIDC_ISSUER"
+	envOIDCClientID   = "CP_OIDC_CLIENT_ID"
+
+	defaultJWTIssuer      = "drun-dash"
+	defaultJWTAudience    = "drun-dash-api"
+	defaultJWTKID         = "dev"
+	defaultAccessTokenTTL = 15 * time.Minute
+)
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -44,9 +72,9 @@ func main() {
 	}
 }
 
-// run loads configuration, opens the database pool, builds the router, and
-// serves until an interrupt or termination signal triggers a graceful
-// shutdown.
+// run loads configuration, opens the database and Redis pools, assembles the
+// auth stack, builds the router, and serves until an interrupt or termination
+// signal triggers a graceful shutdown.
 func run() error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -68,19 +96,153 @@ func run() error {
 	}
 	defer pool.Close()
 
-	router := newRouter(logger, health.Named{Name: "database", Checker: health.PingChecker{Pool: pool}})
+	// Redis backs the token revocation denylist. Connect is likewise lazy.
+	redisClient, err := redis.Connect(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = redisClient.Close() }()
+
+	authDeps, err := buildAuthDeps(ctx, logger, pool, redisClient)
+	if err != nil {
+		return err
+	}
+
+	router := newRouter(logger, authDeps, health.Named{Name: "database", Checker: health.PingChecker{Pool: pool}})
 	return httpserver.New(cfg, router, logger).Run(ctx)
+}
+
+// buildAuthDeps assembles the authentication stack from the environment: the
+// session-token issuer and verifier (sharing one Ed25519 key), the Redis-backed
+// revoker, the member store, and the OIDC verifier for the session exchange.
+//
+// The OIDC verifier requires live discovery against the org's IdP, so it is
+// built only when CP_OIDC_ISSUER and CP_OIDC_CLIENT_ID are both set. When they
+// are not, auth is not wired (a warning is logged) and the server still serves
+// health checks — this keeps a bare local `go run` working without an IdP.
+func buildAuthDeps(ctx context.Context, logger *slog.Logger, pool *db.Pool, redisClient *redis.Client) (*httpapi.Deps, error) {
+	issuerName := getEnv(envJWTIssuer, defaultJWTIssuer)
+	audience := getEnv(envJWTAudience, defaultJWTAudience)
+	kid := getEnv(envJWTKID, defaultJWTKID)
+
+	ttl := defaultAccessTokenTTL
+	if raw := os.Getenv(envAccessTokenTTL); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("control-plane: %s: %w", envAccessTokenTTL, err)
+		}
+		ttl = parsed
+	}
+
+	signingKey, err := signingKeyFromEnv(logger)
+	if err != nil {
+		return nil, err
+	}
+	publicKey := signingKey.Public().(ed25519.PublicKey)
+
+	issuer, err := auth.NewIssuer(auth.IssuerConfig{
+		SigningKey: signingKey,
+		KID:        kid,
+		Issuer:     issuerName,
+		Audience:   audience,
+		TTL:        ttl,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("control-plane: build issuer: %w", err)
+	}
+
+	revoker, err := auth.NewRedisRevoker(redisClient)
+	if err != nil {
+		return nil, fmt.Errorf("control-plane: build revoker: %w", err)
+	}
+	verifier, err := auth.NewVerifier(auth.VerifierConfig{
+		Keys:     map[string]ed25519.PublicKey{kid: publicKey},
+		Issuer:   issuerName,
+		Audience: audience,
+		Revoker:  revoker,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("control-plane: build verifier: %w", err)
+	}
+
+	oidcIssuer := os.Getenv(envOIDCIssuer)
+	oidcClientID := os.Getenv(envOIDCClientID)
+	if oidcIssuer == "" || oidcClientID == "" {
+		logger.Warn("OIDC not configured; auth routes disabled",
+			slog.String("hint", fmt.Sprintf("set %s and %s to enable /auth/session and /auth/whoami", envOIDCIssuer, envOIDCClientID)))
+		return nil, nil
+	}
+	oidcVerifier, err := oidc.NewRemoteVerifier(ctx, oidcIssuer, oidcClientID)
+	if err != nil {
+		return nil, fmt.Errorf("control-plane: build oidc verifier: %w", err)
+	}
+
+	logger.Info("auth configured",
+		slog.String("issuer", issuerName),
+		slog.String("audience", audience),
+		slog.String("kid", kid),
+		slog.Duration("access_token_ttl", ttl),
+		slog.String("oidc_issuer", oidcIssuer),
+	)
+
+	return &httpapi.Deps{
+		OIDC:      oidcVerifier,
+		Issuer:    issuer,
+		Verifier:  verifier,
+		Members:   store.NewMemberStore(pool),
+		AccessTTL: ttl,
+	}, nil
+}
+
+// signingKeyFromEnv builds the Ed25519 signing key from CP_JWT_SIGNING_SEED (a
+// base64-encoded 32-byte seed). When the variable is unset, an ephemeral key is
+// generated so local development works out of the box; tokens minted with it do
+// not survive a restart, which is fine for dev and unacceptable for production
+// (hence the warning). An explicitly set but malformed seed is a hard error.
+func signingKeyFromEnv(logger *slog.Logger) (ed25519.PrivateKey, error) {
+	raw := os.Getenv(envJWTSigningSeed)
+	if raw == "" {
+		logger.Warn("no signing seed set; generating an ephemeral key (tokens will not survive restart)",
+			slog.String("hint", fmt.Sprintf("set %s to a base64-encoded 32-byte seed in production", envJWTSigningSeed)))
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("control-plane: generate ephemeral signing key: %w", err)
+		}
+		return priv, nil
+	}
+
+	seed, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("control-plane: %s: decode base64: %w", envJWTSigningSeed, err)
+	}
+	if len(seed) != ed25519.SeedSize {
+		return nil, fmt.Errorf("control-plane: %s: seed must decode to %d bytes, got %d", envJWTSigningSeed, ed25519.SeedSize, len(seed))
+	}
+	return ed25519.NewKeyFromSeed(seed), nil
+}
+
+// getEnv returns the value of key, or def when the variable is unset or empty.
+func getEnv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 // newRouter builds the HTTP router for the control-plane server, wrapping every
 // route in the shared middleware chain: request IDs, panic recovery, and
-// structured access logging. The readiness checkers back GET /readyz.
-func newRouter(logger *slog.Logger, checkers ...health.Named) http.Handler {
+// structured access logging. The readiness checkers back GET /readyz. When
+// authDeps is non-nil, the auth routes are mounted via httpapi.Mount.
+func newRouter(logger *slog.Logger, authDeps *httpapi.Deps, checkers ...health.Named) http.Handler {
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID, httpx.Recoverer(logger), httpx.Logger(logger))
 
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", health.Handler(checkers...))
+
+	if authDeps != nil {
+		httpapi.Mount(r, *authDeps)
+	}
 	return r
 }
 
