@@ -4,55 +4,19 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/Domene99/drun-dash/internal/cli"
 )
 
-func TestVersionSubcommand(t *testing.T) {
+// main is a one-liner that delegates to cli.Run and calls os.Exit, so the
+// behavior is unit-tested in internal/cli. This smoke test confirms the wiring:
+// the same dispatch main() uses is reachable and returns the version.
+func TestRunWiring(t *testing.T) {
 	var out, errOut bytes.Buffer
-	code := run([]string{"version"}, &out, &errOut)
-
-	if code != 0 {
+	if code := cli.Run([]string{"version"}, &out, &errOut); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
-	if got := strings.TrimSpace(out.String()); got != version {
-		t.Errorf("version output = %q, want %q", got, version)
-	}
-	if errOut.Len() != 0 {
-		t.Errorf("stderr = %q, want empty", errOut.String())
-	}
-}
-
-func TestHelpSubcommand(t *testing.T) {
-	var out, errOut bytes.Buffer
-	code := run([]string{"help"}, &out, &errOut)
-
-	if code != 0 {
-		t.Fatalf("exit code = %d, want 0", code)
-	}
-	if !strings.Contains(out.String(), "Usage:") {
-		t.Errorf("help output missing usage text: %q", out.String())
-	}
-}
-
-func TestNoArgs(t *testing.T) {
-	var out, errOut bytes.Buffer
-	code := run(nil, &out, &errOut)
-
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2", code)
-	}
-	if !strings.Contains(errOut.String(), "Usage:") {
-		t.Errorf("expected usage on stderr, got %q", errOut.String())
-	}
-}
-
-func TestUnknownCommand(t *testing.T) {
-	var out, errOut bytes.Buffer
-	code := run([]string{"bogus"}, &out, &errOut)
-
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2", code)
-	}
-	if !strings.Contains(errOut.String(), "unknown command") {
-		t.Errorf("expected unknown command error, got %q", errOut.String())
+	if got := strings.TrimSpace(out.String()); got != cli.Version {
+		t.Errorf("version output = %q, want %q", got, cli.Version)
 	}
 }
