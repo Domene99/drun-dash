@@ -7,10 +7,11 @@
 // with a per-command flag.FlagSet — no cobra/urfave or other CLI framework.
 //
 // drun-dash is the power-user surface that authenticates a member to the org,
-// syncs policy, and drives governed drun sessions. Most subcommands are still
-// stubs: [Run] establishes the command structure now so later batches can fill
-// in real auth (device-authorization flow), policy sync, and session capture
-// without reworking dispatch. Stubs print what they will do and exit non-zero.
+// syncs policy, and drives governed drun sessions. Authentication is real:
+// `login` runs the OAuth 2.0 device-authorization flow and stores the session
+// token, and `whoami` reports the authenticated member. Other subcommands
+// (policy sync, session capture) remain stubs that later batches fill in
+// without reworking dispatch.
 package cli
 
 import (
@@ -61,8 +62,8 @@ Usage:
   drun-dash <command> [flags]
 
 Commands:
-  login      Authenticate this machine to the org (stub — not implemented)
-  whoami     Show the currently authenticated member (stub — not implemented)
+  login      Authenticate this machine to the org (device-authorization flow)
+  whoami     Show the currently authenticated member
   config     Print the resolved runtime configuration
   version    Print the CLI version
   help       Show this help text
