@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.0",
+  "org_id": "org_acme",
+  "policy_id": "pol_standard_dev",
+  "policy_version": 7,
+  "drun_config": {
+    "domain_allowlist": [
+      "registry.npmjs.org",
+      "pypi.org",
+      "files.pythonhosted.org",
+      "github.com",
+      "raw.githubusercontent.com",
+      "proxy.golang.org",
+      "sum.golang.org"
+    ],
+    "mount_allowlist": [
+      "/home/dev/project",
+      "/home/dev/.cache"
+    ],
+    "mount_overlay_paths": [
+      "node_modules",
+      ".venv"
+    ],
+    "env_allowlist": [
+      "PATH",
+      "HOME",
+      "LANG",
+      "LC_ALL",
+      "TZ",
+      "TERM"
+    ],
+    "bash_command_allowlist": [],
+    "bash_command_denylist": [
+      "ssh",
+      "scp",
+      "nc",
+      "sudo"
+    ],
+    "bash_timeout_ms": 120000,
+    "fetch_timeout_ms": 30000,
+    "connect_timeout_ms": 5000,
+    "max_workspace_mb": 2048,
+    "max_sessions": 10,
+    "max_checkpoints": 200,
+    "session_idle_timeout_secs": 3600
+  },
+  "issued_at": "2026-07-11T00:00:00Z",
+  "expires_at": "2026-08-11T00:00:00Z",
+  "content_hash": "sha256:ca6352a43b0ac0b6a61f7ba5474b294a119801c7b3fdbd72e6f6da858329ba54",
+  "signature": "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+}
