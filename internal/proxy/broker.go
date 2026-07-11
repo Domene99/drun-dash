@@ -91,10 +91,11 @@ type usageWriter interface {
 // streaming (SSE) bodies. Every call is gated by a valid credential grant
 // (ADR-0003 §3): the presented bearer token is hashed and looked up, the grant
 // is checked fail-closed (revocation, expiry, session status) and against its
-// scopes, and only then is the upstream master credential — resolved from the
-// grant's endpoint — injected as the Authorization header, overwriting any
-// client-supplied value. So the master key lives only in the proxy and is never
-// sent, seen, or chosen by the client. Each forwarded call is metered (§5).
+// scopes, the org's hard budget caps are checked (§5), and only then is the
+// upstream master credential — resolved from the grant's endpoint — injected as
+// the Authorization header, overwriting any client-supplied value. So the
+// master key lives only in the proxy and is never sent, seen, or chosen by the
+// client. Each forwarded call is metered (§5).
 type broker struct {
 	// upstream is the validated base URL, or nil when the proxy is
 	// unconfigured (env unset/invalid). A nil upstream makes chatCompletions
@@ -103,12 +104,13 @@ type broker struct {
 	// vault resolves the grant endpoint's secret_ref to the upstream master
 	// credential on each forwarded request.
 	vault vault.Vault
-	// grants, sessions, endpoints, and usage are the store seams the per-call
-	// validation and metering resolve through. They are interfaces so tests can
-	// inject fakes without a database.
+	// grants, sessions, endpoints, budgets, and usage are the store seams the
+	// per-call validation, budget enforcement, and metering resolve through.
+	// They are interfaces so tests can inject fakes without a database.
 	grants    grantReader
 	sessions  sessionReader
 	endpoints endpointReader
+	budgets   budgetReader
 	usage     usageWriter
 	client    *http.Client
 	logger    *slog.Logger
@@ -127,11 +129,11 @@ type storeQuerier = store.Querier
 // /healthz and the rest of the server alive.
 //
 // The stores are built over pool so the per-call path (grant lookup, session
-// load, endpoint resolve, usage append) runs against the real database. The
-// upstream credential is brokered through the EnvVault development backend: the
-// secret_ref comes from the grant's endpoint and is resolved per request in
-// forward, so the credential is never cached in the process and honors
-// rotation.
+// load, endpoint resolve, budget check, usage append) runs against the real
+// database. The upstream credential is brokered through the EnvVault development
+// backend: the secret_ref comes from the grant's endpoint and is resolved per
+// request in forward, so the credential is never cached in the process and
+// honors rotation.
 func newBroker(logger *slog.Logger, pool storeQuerier) *broker {
 	if logger == nil {
 		logger = slog.Default()
@@ -142,6 +144,7 @@ func newBroker(logger *slog.Logger, pool storeQuerier) *broker {
 		grants:    store.NewCredentialGrantStore(pool),
 		sessions:  store.NewSessionStore(pool),
 		endpoints: store.NewModelEndpointStore(pool),
+		budgets:   store.NewAnalyticsStore(pool),
 		usage:     store.NewUsageEventStore(pool),
 		client: &http.Client{
 			// Pass upstream redirects through verbatim instead of following
@@ -201,8 +204,9 @@ const (
 
 // chatCompletions handles POST /v1/chat/completions. When the proxy is
 // unconfigured it reports 502 upstream_unconfigured; otherwise it authorizes the
-// request against its credential grant (ADR-0003 §3) and, only on success,
-// forwards to the upstream and streams the response back while metering it.
+// request against its credential grant (ADR-0003 §3), enforces the org's hard
+// budget caps (§5), and, only on success, forwards to the upstream and streams
+// the response back while metering it.
 func (b *broker) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	if b.upstream == nil {
 		_ = httpx.WriteError(w, http.StatusBadGateway, upstreamUnconfiguredCode,
@@ -211,6 +215,12 @@ func (b *broker) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	grant, session, ok := b.authorize(w, r)
 	if !ok {
+		return
+	}
+	// Budget enforcement runs after grant validation and before any credential
+	// injection or forwarding, so a call over a hard cap is refused without
+	// reaching the upstream (and so is never metered).
+	if !b.enforceBudget(w, r, session) {
 		return
 	}
 	b.forward(w, r, grant, session)
@@ -279,6 +289,40 @@ func (b *broker) authorize(w http.ResponseWriter, r *http.Request) (store.Creden
 	}
 
 	return grant, session, true
+}
+
+// enforceBudget blocks the call when the session's org has hit a hard budget cap
+// (ADR-0003 §5). It resolves the org's current-window utilisation and, if any
+// budget rule's spend has reached its hard cap, writes a flat 429
+// budget_exceeded envelope naming the budget and returns ok=false — the caller
+// then forwards nothing, so the upstream is never contacted and the blocked call
+// is never metered. Under all caps it returns ok=true.
+//
+// The check fails closed: a utilisation-lookup error is treated as a server
+// fault (500) rather than forwarding, matching the authorize path's posture on
+// unexpected store errors — the proxy cannot prove the org is under cap, so it
+// does not spend. This adds a DB aggregation to the hot path; that latency is
+// accepted for v1 per the design's metering tradeoff, with a Redis running
+// counter noted as the follow-up (see checkBudget and the README).
+func (b *broker) enforceBudget(w http.ResponseWriter, r *http.Request, session store.Session) bool {
+	row, hit, err := checkBudget(r.Context(), b.budgets, session.OrgID, time.Now().UTC())
+	if err != nil {
+		b.logger.LogAttrs(r.Context(), slog.LevelError, "budget check failed",
+			slog.String("org_id", session.OrgID),
+			slog.Any("error", err))
+		b.writeInternal(w)
+		return false
+	}
+	if hit {
+		b.logger.LogAttrs(r.Context(), slog.LevelInfo, "budget cap reached; blocking call",
+			slog.String("org_id", session.OrgID),
+			slog.String("budget_id", row.BudgetID),
+			slog.String("budget", row.Name))
+		_ = httpx.WriteError(w, http.StatusTooManyRequests, budgetExceededCode,
+			"organization budget \""+row.Name+"\" has reached its limit")
+		return false
+	}
+	return true
 }
 
 // forward proxies r to <upstream>/v1/chat/completions and streams the upstream

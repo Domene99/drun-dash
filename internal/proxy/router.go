@@ -6,7 +6,8 @@
 // [NewRouter] exposes a health endpoint and forwards POST /v1/chat/completions
 // to a single configured upstream (see [broker]), streaming the response back
 // faithfully — including SSE. Every forwarded call is gated by a per-session
-// credential grant and metered (ADR-0003 §3/§5, see [broker]); multi-endpoint
+// credential grant, checked against the org's hard budget caps, and metered
+// (ADR-0003 §3/§5, see [broker]); multi-endpoint
 // routing layers on in a later batch.
 package proxy
 
@@ -25,6 +26,9 @@ import (
 // structured access logging. pool is the shared database handle the broker's
 // per-call grant validation and metering resolve through (any store.Querier,
 // so a *db.Pool satisfies it).
+//
+// The broker's stores — grant/session/endpoint lookups, budget utilisation, and
+// usage metering — are all built over pool inside newBroker.
 //
 // The upstream base URL is read and validated once here (see newBroker); an
 // unset or invalid LLM_UPSTREAM_BASE_URL is not fatal — the broker route then

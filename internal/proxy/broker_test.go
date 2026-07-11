@@ -87,6 +87,19 @@ func (f *fakeUsage) recorded() []store.AppendUsageEventParams {
 	return append([]store.AppendUsageEventParams(nil), f.events...)
 }
 
+// fakeBudgets stands in for the AnalyticsStore's BudgetUtilization: it returns a
+// fixed set of budget rows (or an error) so a test can drive the under-cap,
+// at/over-cap, and lookup-failure paths without a database. The zero value
+// returns no rows, i.e. no budgets configured -> always under cap.
+type fakeBudgets struct {
+	rows []store.BudgetUsageRow
+	err  error
+}
+
+func (f fakeBudgets) BudgetUtilization(context.Context, string, time.Time) ([]store.BudgetUsageRow, error) {
+	return f.rows, f.err
+}
+
 // testSecret is the master credential the default test vault injects.
 const testSecret = "sk-master-test"
 
@@ -160,6 +173,7 @@ func newTestBroker(t *testing.T, upstream string, rt http.RoundTripper) *broker 
 		grants:    fakeGrants{grant: validGrant()},
 		sessions:  fakeSessions{session: activeSession()},
 		endpoints: fakeEndpoints{endpoint: testEndpoint()},
+		budgets:   fakeBudgets{},
 		usage:     &fakeUsage{},
 		client: &http.Client{
 			Transport: rt,
