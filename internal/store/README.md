@@ -4,11 +4,13 @@ The PostgreSQL persistence layer for drun-dash: small, hand-written
 repositories that map the control-plane schema to Go types.
 
 This package covers the **tenancy + identity** tables (migrations
-`000001`–`000002`) and the **agent-catalog domain** — model infrastructure,
-billing, and the catalog itself (migrations `000003`–`000004`). The tenancy
-repositories are the **reference pattern** every other store copies, so
-consistency across the package matters more than breadth. The runtime /
-telemetry tables (`000005`–`000006`) are intentionally not covered here.
+`000001`–`000002`), the **agent-catalog domain** — model infrastructure,
+billing, and the catalog itself (migrations `000003`–`000004`) — and the
+**runtime + telemetry domain** — launched sessions, scoped proxy credentials,
+append-only usage metering, the approval queue, and ingested trajectories
+(migrations `000005`–`000006`). The tenancy repositories are the **reference
+pattern** every other store copies, so consistency across the package matters
+more than breadth.
 
 ## The pattern
 
@@ -71,33 +73,66 @@ telemetry tables (`000005`–`000006`) are intentionally not covered here.
 | `agent_versions.go` | `AgentVersionStore` | `Create`, `GetByAgentAndVersion`, `ListByAgent` |
 | `entitlements.go` | `EntitlementStore` | `Create`, `ListByAgent`, `ListByMember`, `ListByTeam`, `Delete` |
 
+### Runtime + metering (`000005`)
+
+| File | Type | Methods |
+|------|------|---------|
+| `sessions.go` | `SessionStore` | `Create`, `GetByID`, `ListByOrg`, `ListByAgent`, `SetStatus` |
+| `credential_grants.go` | `CredentialGrantStore` | `Create`, `GetByTokenHash`, `ListBySession`, `Revoke` |
+| `usage_events.go` | `UsageEventStore` | `Append`, `ListByOrg`, `ListBySession` |
+| `approval_requests.go` | `ApprovalRequestStore` | `Create`, `GetByID`, `ListByOrg`, `ListPendingByOrg`, `Decide` |
+
+### Telemetry (`000006`)
+
+| File | Type | Methods |
+|------|------|---------|
+| `trajectories.go` | `TrajectoryStore` | `Create`, `GetByID`, `ListByOrg`, `SetEnded` |
+| `trajectory_nodes.go` | `TrajectoryNodeStore` | `Create`, `GetByID`, `GetByEventID`, `ListByTrajectory` |
+
 The row structs live in per-domain `models_*.go` files: `models.go` (tenancy +
-identity), `models_modelinfra.go`, `models_billing.go`, and
-`models_catalog.go`.
+identity), `models_modelinfra.go`, `models_billing.go`, `models_catalog.go`,
+`models_runtime.go`, and `models_telemetry.go`.
 
 ## Types & conventions
 
-- **UUIDs** are `string`; pgx scans and encodes them transparently.
+- **UUIDs** are `string`; pgx scans and encodes them transparently. The one
+  exception is `usage_events.id`, a `BIGINT` identity, scanned as `int64`.
 - **`TIMESTAMPTZ`** columns are `time.Time`.
 - **Nullable** columns are pointer fields (e.g. `Policy.Description`,
-  `Entitlement.MemberID`), except cap amounts (see below).
+  `Entitlement.MemberID`, `Session.TerminatedAt`), except cap amounts (see
+  below).
 - **Enums** are typed `string` constants with a `Valid()` method, mirroring
-  `Role`: `BudgetScope` (`organization` / `team` / `agent` / `member`) and
-  `BudgetWindow` (`daily` / `weekly` / `monthly`).
+  `Role`: `BudgetScope`, `BudgetWindow`, `SessionStatus`
+  (`pending` / `active` / `terminated` / `failed`), `ApprovalStatus`
+  (`pending` / `approved` / `denied` / `expired`), and `TrajectoryFieldClass`
+  (`structure` / `payload`).
 - **`jsonb`** columns (`match_json`, `content_json`, `allowed_tools`,
-  `signing_json`) are `json.RawMessage`; a `nil` value means SQL NULL, and the
-  columns with a default (`match_json`, `allowed_tools`) fall back to it via
-  `COALESCE` when nil is passed.
-- **`numeric(20,6)`** cap amounts (`budget_rules.soft_cap` / `hard_cap`) are
-  `pgtype.Numeric` (part of pgx, not a new dependency) so exact decimals
-  round-trip without floating-point loss; an invalid value (`Valid == false`)
-  represents SQL NULL.
+  `signing_json`, `labels`, `scopes`, `context_json`, `metadata_json`) are
+  `json.RawMessage`; a `nil` value passed to a `Create` falls back to the
+  column default (`'{}'` or `'[]'`) via `COALESCE`.
+- **`numeric(20,6)`** amounts (`budget_rules.soft_cap` / `hard_cap`,
+  `usage_events.cost_amount`) are `pgtype.Numeric` (part of pgx, not a new
+  dependency) so exact decimals round-trip without floating-point loss; for the
+  nullable caps an invalid value (`Valid == false`) represents SQL NULL, while
+  the non-null `cost_amount` treats an invalid value as 0.
 - **Create** takes explicit column values (a `Create…Params` struct for the
   wider inserts) and returns the fully-populated stored row via `RETURNING`, so
   callers see database-assigned `id`, `created_at`, and defaults.
+- **Generated columns** are never inserted: `usage_events.total_tokens` is
+  `GENERATED ALWAYS` (`prompt_tokens + completion_tokens`) and read-only, so
+  `Append` omits it from the INSERT and reads it back via `RETURNING`.
+- **Enum defaults are applied in Go** where the column has one: `Session.Status`
+  defaults to `pending` and `TrajectoryNode.FieldClass` to `structure` when the
+  param is empty, matching the column default.
+- **Security:** `credential_grants` stores only the **hash** of a proxy token
+  (`proxy_token_hash`); the raw token is never persisted, and `GetByTokenHash`
+  is the proxy's per-call lookup.
 - **`entitlements.Create`** validates the member-XOR-team rule in Go *before*
   the insert, returning a descriptive error (not a store sentinel) when both or
   neither principal is set, mirroring the database CHECK constraint.
+  **`approval_requests.Decide`** likewise rejects a non-terminal status before
+  the DB and only acts on a still-pending row (a second decision on the same id
+  returns `ErrNotFound`).
 
 ## Usage
 
@@ -117,16 +152,18 @@ m, err := members.Create(ctx, store.CreateMemberParams{
 
 ## Tests
 
-Pure logic (error translation, `Role.Valid`, the enum `Valid()` methods, and
-the entitlement member-XOR-team pre-check) is covered by `store_test.go` and
-`catalog_test.go`, which run with **no database**:
+Pure logic (error translation, `Role.Valid`, the enum `Valid()` methods, the
+entitlement member-XOR-team pre-check, and the approval terminal-status
+pre-check) is covered by `store_test.go`, `catalog_test.go`, and
+`runtime_test.go`, which run with **no database**:
 
 ```sh
 go test ./internal/store/...
 ```
 
-The database-touching tests live in `integration_test.go` and
-`catalog_integration_test.go` behind the `integration` build tag and **skip**
+The database-touching tests live in `integration_test.go`,
+`catalog_integration_test.go`, `runtime_integration_test.go`, and
+`telemetry_integration_test.go` behind the `integration` build tag and **skip**
 when Postgres is unreachable (mirroring `internal/db`):
 
 ```sh
