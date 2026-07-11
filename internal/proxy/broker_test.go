@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -11,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Domene99/drun-dash/internal/vault"
 )
 
 // roundTripFunc adapts a function to an http.RoundTripper so tests can stand in
@@ -20,12 +23,29 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+// stubVault is a Vault whose Resolve returns a fixed secret or error, letting
+// tests drive the broker's credential-injection and failure paths without any
+// environment state.
+type stubVault struct {
+	secret vault.Secret
+	err    error
+}
+
+func (s stubVault) Resolve(context.Context, string) (vault.Secret, error) {
+	return s.secret, s.err
+}
+
+// testSecret is the master credential the default test vault injects.
+const testSecret = "sk-master-test"
+
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// newTestBroker builds a broker wired to the given RoundTripper as its upstream,
-// preserving the same client redirect policy newBroker uses.
+// newTestBroker builds a broker wired to the given RoundTripper as its upstream
+// and a stub vault that resolves to testSecret, preserving the same client
+// redirect policy newBroker uses. Tests exercising credential failures override
+// b.vault directly.
 func newTestBroker(t *testing.T, upstream string, rt http.RoundTripper) *broker {
 	t.Helper()
 	u, err := parseUpstream(upstream)
@@ -33,7 +53,9 @@ func newTestBroker(t *testing.T, upstream string, rt http.RoundTripper) *broker 
 		t.Fatalf("parseUpstream(%q): %v", upstream, err)
 	}
 	return &broker{
-		upstream: u,
+		upstream:  u,
+		vault:     stubVault{secret: vault.Secret{Value: testSecret}},
+		secretRef: defaultUpstreamSecretRef,
 		client: &http.Client{
 			Transport: rt,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -46,7 +68,8 @@ func newTestBroker(t *testing.T, upstream string, rt http.RoundTripper) *broker 
 
 // TestBrokerPassesJSONThrough asserts a non-streamed JSON response is forwarded
 // faithfully: method, path, query, and safe request headers/body reach the
-// upstream, hop-by-hop headers are dropped, and the upstream status, headers
+// upstream, hop-by-hop headers are dropped, the client's Authorization is
+// replaced by the injected master credential, and the upstream status, headers
 // (including Content-Type), and body reach the client unchanged.
 func TestBrokerPassesJSONThrough(t *testing.T) {
 	var got *http.Request
@@ -93,8 +116,9 @@ func TestBrokerPassesJSONThrough(t *testing.T) {
 	if got.URL.Host != "upstream.test" {
 		t.Errorf("upstream host = %q, want upstream.test", got.URL.Host)
 	}
-	if got.Header.Get("Authorization") != "Bearer sk-client" {
-		t.Errorf("upstream Authorization = %q, want the client's header forwarded", got.Header.Get("Authorization"))
+	// The master credential is injected; the client's own Authorization is gone.
+	if got.Header.Get("Authorization") != "Bearer "+testSecret {
+		t.Errorf("upstream Authorization = %q, want the injected master credential", got.Header.Get("Authorization"))
 	}
 	if gotBody != `{"model":"gpt"}` {
 		t.Errorf("upstream body = %q, want the client's body forwarded", gotBody)
@@ -119,6 +143,98 @@ func TestBrokerPassesJSONThrough(t *testing.T) {
 	if body := rec.Body.String(); body != `{"ok":true}` {
 		t.Errorf("body = %q, want %q", body, `{"ok":true}`)
 	}
+}
+
+// TestBrokerInjectsVaultCredential asserts the broker resolves the upstream
+// credential from a real EnvVault and injects it as the Authorization header,
+// overwriting a client-supplied value so the master key is never client-chosen
+// and the client's own header never reaches the upstream.
+func TestBrokerInjectsVaultCredential(t *testing.T) {
+	t.Setenv("DRUNDASH_SECRET_ANTHROPIC", "sk-master-env")
+
+	var gotAuth string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotAuth = r.Header.Get("Authorization")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+		}, nil
+	})
+	b := newTestBroker(t, "https://upstream.test", rt)
+	b.vault = vault.NewEnvVault()
+	b.secretRef = "vault://dev/anthropic"
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer sk-client-attempt")
+	rec := httptest.NewRecorder()
+	b.chatCompletions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotAuth != "Bearer sk-master-env" {
+		t.Errorf("upstream Authorization = %q, want the vault-resolved master credential", gotAuth)
+	}
+	if strings.Contains(gotAuth, "sk-client-attempt") {
+		t.Errorf("upstream Authorization = %q, must not carry the client-supplied value", gotAuth)
+	}
+}
+
+// TestBrokerUnresolvableSecretIs502 asserts that when the upstream credential
+// cannot be resolved (secret not registered) the request is not forwarded, the
+// client receives a flat 502 upstream_credential_unavailable envelope, and the
+// missing-secret ref/value never leaks into the response body.
+func TestBrokerUnresolvableSecretIs502(t *testing.T) {
+	// DRUNDASH_SECRET_ANTHROPIC intentionally left unset -> ErrNotFound.
+	forwarded := false
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		forwarded = true
+		return nil, nil
+	})
+	b := newTestBroker(t, "https://upstream.test", rt)
+	b.vault = vault.NewEnvVault()
+	b.secretRef = "vault://dev/anthropic"
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+	b.chatCompletions(rec, req)
+
+	if forwarded {
+		t.Fatal("request was forwarded upstream without a credential")
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	assertErrorCode(t, rec, upstreamCredentialCode)
+	if strings.Contains(rec.Body.String(), "DRUNDASH_SECRET") {
+		t.Errorf("error body leaks the credential env mapping: %q", rec.Body.String())
+	}
+}
+
+// TestBrokerInvalidSecretRefIs502 asserts a malformed secret ref surfaces as a
+// flat 502 upstream_credential_unavailable rather than forwarding.
+func TestBrokerInvalidSecretRefIs502(t *testing.T) {
+	forwarded := false
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		forwarded = true
+		return nil, nil
+	})
+	b := newTestBroker(t, "https://upstream.test", rt)
+	b.vault = vault.NewEnvVault()
+	b.secretRef = "not-a-vault-ref"
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+	b.chatCompletions(rec, req)
+
+	if forwarded {
+		t.Fatal("request was forwarded upstream with an invalid secret ref")
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	assertErrorCode(t, rec, upstreamCredentialCode)
 }
 
 // streamRecorder is an http.ResponseWriter that captures each Flush as a
@@ -288,6 +404,23 @@ func TestBrokerConfiguredFromEnv(t *testing.T) {
 	if b.upstream.Host != "api.openai.com" {
 		t.Errorf("upstream host = %q, want api.openai.com", b.upstream.Host)
 	}
+}
+
+// TestUpstreamSecretRef covers the secret-ref resolution: env override wins,
+// otherwise the anthropic dev default is used.
+func TestUpstreamSecretRef(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		t.Setenv(envUpstreamSecretRef, "")
+		if got := upstreamSecretRef(); got != defaultUpstreamSecretRef {
+			t.Errorf("upstreamSecretRef() = %q, want %q", got, defaultUpstreamSecretRef)
+		}
+	})
+	t.Run("override", func(t *testing.T) {
+		t.Setenv(envUpstreamSecretRef, "vault://dev/openai-us")
+		if got := upstreamSecretRef(); got != "vault://dev/openai-us" {
+			t.Errorf("upstreamSecretRef() = %q, want vault://dev/openai-us", got)
+		}
+	})
 }
 
 // assertErrorCode decodes a flat httpx error envelope from a recorder and checks
