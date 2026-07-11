@@ -27,6 +27,9 @@ const sessionCookieName = "dd_session"
 // for this bounded shell; a follow-up can make it operator-selectable.
 const spendWindow = 30 * 24 * time.Hour
 
+// spendWindowLabel describes the fixed spend window in the UI.
+const spendWindowLabel = "(last 30 days)"
+
 // ctxKey is the private context-key type for values this package stashes on the
 // request context.
 type ctxKey int
@@ -34,8 +37,9 @@ type ctxKey int
 const tokenCtxKey ctxKey = iota
 
 // Server is the admin-ui HTTP handler: a chi router serving the login page, the
-// dashboard, and a health check, backed by a control-plane [Client]. Construct
-// it with [New]; it implements [http.Handler].
+// dashboard, the governance pages (sessions, spend, approvals), and a health
+// check, backed by a control-plane [Client]. Construct it with [New]; it
+// implements [http.Handler].
 type Server struct {
 	client       *Client
 	logger       *slog.Logger
@@ -85,8 +89,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // routes builds the chi router. Health and the login endpoints are public; the
-// dashboard and its HTMX fragment sit behind requireAuth, which redirects to
-// /login when the session cookie is absent.
+// dashboard, the governance pages, and the HTMX fragment/action sit behind
+// requireAuth, which redirects to /login when the session cookie is absent.
 func (s *Server) routes() chi.Router {
 	r := chi.NewRouter()
 
@@ -99,6 +103,10 @@ func (s *Server) routes() chi.Router {
 		r.Use(s.requireAuth)
 		r.Get("/", s.handleDashboard)
 		r.Get("/fragments/summary", s.handleSummaryFragment)
+		r.Get("/sessions", s.handleSessions)
+		r.Get("/spend", s.handleSpend)
+		r.Get("/approvals", s.handleApprovals)
+		r.Post("/approvals/{id}/decision", s.handleApprovalDecision)
 	})
 
 	return r
@@ -193,12 +201,121 @@ func (s *Server) handleSummaryFragment(w http.ResponseWriter, r *http.Request) {
 
 	summary, err := s.buildSummary(r.Context(), token)
 	if err != nil {
-		s.clearSessionCookie(w)
-		w.Header().Set("HX-Redirect", "/login")
-		w.WriteHeader(http.StatusOK)
+		s.hxRedirectToLogin(w)
 		return
 	}
 	s.render(w, r, http.StatusOK, views.Summary(summary))
+}
+
+// handleSessions renders the Sessions page: every governed session with its
+// fan-out ceiling. A rejected token redirects to /login; any other
+// control-plane error is surfaced inline instead of blanking the page.
+func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+	token := tokenFromContext(r.Context())
+
+	var data views.SessionsData
+	list, err := s.client.ListSessions(r.Context(), token)
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		s.redirectToLogin(w, r)
+		return
+	case err != nil:
+		s.logger.ErrorContext(r.Context(), "admin-ui: list sessions failed", slog.Any("error", err))
+		data.Error = "Could not load sessions: " + readableError(err)
+	default:
+		data.Sessions = sessionDetailRows(list.Items)
+	}
+	s.render(w, r, http.StatusOK, views.Sessions(data))
+}
+
+// handleSpend renders the Spend page: total spend and the per-agent breakdown
+// over the fixed window, plus budget utilization. The spend and budgets
+// sections fail independently so one degraded endpoint does not hide the other.
+func (s *Server) handleSpend(w http.ResponseWriter, r *http.Request) {
+	token := tokenFromContext(r.Context())
+
+	data := views.SpendPageData{Window: spendWindowLabel, Total: "—"}
+
+	to := s.now().UTC()
+	from := to.Add(-spendWindow)
+	report, err := s.client.QuerySpend(r.Context(), token, from.Format(time.RFC3339), to.Format(time.RFC3339), "agent")
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		s.redirectToLogin(w, r)
+		return
+	case err != nil:
+		s.logger.ErrorContext(r.Context(), "admin-ui: query spend failed", slog.Any("error", err))
+		data.SpendError = "Could not load spend: " + readableError(err)
+	default:
+		data.Total = amountText(report.Total, report.Currency)
+		data.Groups = spendRows(report.Groups, report.Currency)
+	}
+
+	budgets, err := s.client.ListBudgets(r.Context(), token)
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		s.redirectToLogin(w, r)
+		return
+	case err != nil:
+		s.logger.ErrorContext(r.Context(), "admin-ui: list budgets failed", slog.Any("error", err))
+		data.BudgetsError = "Could not load budgets: " + readableError(err)
+	default:
+		data.Budgets = budgetRows(budgets.Items)
+	}
+
+	s.render(w, r, http.StatusOK, views.Spend(data))
+}
+
+// handleApprovals renders the Approvals page: the escalation queue, listing
+// pending items with an approve/deny action and decided items read-only.
+func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
+	token := tokenFromContext(r.Context())
+
+	var data views.ApprovalsData
+	list, err := s.client.ListApprovals(r.Context(), token, "")
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		s.redirectToLogin(w, r)
+		return
+	case err != nil:
+		s.logger.ErrorContext(r.Context(), "admin-ui: list approvals failed", slog.Any("error", err))
+		data.Error = "Could not load approvals: " + readableError(err)
+	default:
+		data.Approvals = approvalRows(list.Items)
+	}
+	s.render(w, r, http.StatusOK, views.Approvals(data))
+}
+
+// handleApprovalDecision records an approve/deny decision via the control plane
+// and re-renders just the affected row for HTMX to swap in place. A rejected
+// token asks HTMX to redirect to /login; any other control-plane error (for
+// example a 409 on an already-decided request) is surfaced inside the row.
+func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) {
+	token := tokenFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	if err := r.ParseForm(); err != nil {
+		s.render(w, r, http.StatusBadRequest, views.ApprovalRowTr(views.ApprovalRow{ID: id, RowError: "Could not read the decision."}))
+		return
+	}
+	decision := strings.TrimSpace(r.PostFormValue("decision"))
+	if decision != "approve" && decision != "deny" {
+		s.render(w, r, http.StatusBadRequest, views.ApprovalRowTr(views.ApprovalRow{ID: id, RowError: "Invalid decision."}))
+		return
+	}
+	reason := strings.TrimSpace(r.PostFormValue("reason"))
+
+	approval, err := s.client.DecideApproval(r.Context(), token, id, decision, reason)
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		s.hxRedirectToLogin(w)
+		return
+	case err != nil:
+		s.logger.ErrorContext(r.Context(), "admin-ui: decide approval failed", slog.Any("error", err))
+		s.render(w, r, http.StatusOK, views.ApprovalRowTr(views.ApprovalRow{ID: id, RowError: "Decision failed: " + readableError(err)}))
+		return
+	}
+	s.render(w, r, http.StatusOK, views.ApprovalRowTr(approvalRow(*approval)))
 }
 
 // buildSummary fetches the dashboard's live data. Each section fails
@@ -206,7 +323,7 @@ func (s *Server) handleSummaryFragment(w http.ResponseWriter, r *http.Request) {
 // section's error message rather than blanking the page. Only a rejected token
 // (ErrUnauthorized) is returned as an error, so the caller can redirect.
 func (s *Server) buildSummary(ctx context.Context, token string) (views.SummaryData, error) {
-	sd := views.SummaryData{SpendWindow: "(last 30 days)"}
+	sd := views.SummaryData{SpendWindow: spendWindowLabel}
 
 	agents, err := s.client.ListAgents(ctx, token)
 	switch {
@@ -273,6 +390,15 @@ func (s *Server) redirectToLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
+// hxRedirectToLogin clears the stale cookie and tells HTMX to navigate the
+// whole page to /login. HTMX honors the HX-Redirect response header on a 200,
+// whereas a normal 3xx would be swapped into the target element instead.
+func (s *Server) hxRedirectToLogin(w http.ResponseWriter) {
+	s.clearSessionCookie(w)
+	w.Header().Set("HX-Redirect", "/login")
+	w.WriteHeader(http.StatusOK)
+}
+
 // clearSessionCookie expires the session cookie on the client.
 func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
@@ -335,6 +461,26 @@ func amountText(amount float64, currency string) string {
 	return strconv.FormatFloat(amount, 'f', 2, 64) + " " + currency
 }
 
+// utilizationText renders spent/limit as a percentage, or an em dash when the
+// limit is non-positive (and a ratio would be meaningless).
+func utilizationText(spent, limit float64) string {
+	if limit <= 0 {
+		return "—"
+	}
+	return strconv.FormatFloat(spent/limit*100, 'f', 1, 64) + "%"
+}
+
+// readableError renders a control-plane error for display. It prefers the flat
+// Error envelope's message when present and falls back to a generic line, so a
+// page or row never surfaces a raw Go error or blanks out.
+func readableError(err error) string {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Message != "" {
+		return apiErr.Message
+	}
+	return "control plane unavailable"
+}
+
 // agentRows maps catalog agents to display rows.
 func agentRows(agents []Agent) []views.AgentRow {
 	rows := make([]views.AgentRow, 0, len(agents))
@@ -352,7 +498,7 @@ func agentRows(agents []Agent) []views.AgentRow {
 	return rows
 }
 
-// sessionRows maps governed sessions to display rows.
+// sessionRows maps governed sessions to the compact dashboard-summary rows.
 func sessionRows(sessions []Session) []views.SessionRow {
 	rows := make([]views.SessionRow, 0, len(sessions))
 	for _, s := range sessions {
@@ -361,6 +507,22 @@ func sessionRows(sessions []Session) []views.SessionRow {
 			Agent:   s.AgentID,
 			Status:  s.Status,
 			Created: s.CreatedAt,
+		})
+	}
+	return rows
+}
+
+// sessionDetailRows maps governed sessions to the full Sessions-page rows,
+// which additionally carry the fan-out ceiling.
+func sessionDetailRows(sessions []Session) []views.SessionDetailRow {
+	rows := make([]views.SessionDetailRow, 0, len(sessions))
+	for _, s := range sessions {
+		rows = append(rows, views.SessionDetailRow{
+			ID:      s.SessionID,
+			Agent:   s.AgentID,
+			Status:  s.Status,
+			Created: s.CreatedAt,
+			FanOut:  strconv.Itoa(s.FanOutCeiling),
 		})
 	}
 	return rows
@@ -381,4 +543,45 @@ func spendRows(groups []SpendGroup, currency string) []views.SpendRow {
 		})
 	}
 	return rows
+}
+
+// budgetRows maps budgets to display rows, computing utilization and flagging
+// any budget whose spend has reached or exceeded its limit.
+func budgetRows(budgets []Budget) []views.BudgetRow {
+	rows := make([]views.BudgetRow, 0, len(budgets))
+	for _, b := range budgets {
+		rows = append(rows, views.BudgetRow{
+			Name:        b.Name,
+			Period:      b.Period,
+			Spent:       amountText(b.Spent, b.Currency),
+			Limit:       amountText(b.Limit, b.Currency),
+			Utilization: utilizationText(b.Spent, b.Limit),
+			Over:        b.Limit > 0 && b.Spent >= b.Limit,
+		})
+	}
+	return rows
+}
+
+// approvalRows maps escalation-queue items to display rows.
+func approvalRows(approvals []Approval) []views.ApprovalRow {
+	rows := make([]views.ApprovalRow, 0, len(approvals))
+	for _, a := range approvals {
+		rows = append(rows, approvalRow(a))
+	}
+	return rows
+}
+
+// approvalRow maps a single approval to a display row. A "pending" status is
+// the only state that offers the approve/deny action.
+func approvalRow(a Approval) views.ApprovalRow {
+	return views.ApprovalRow{
+		ID:        a.ID,
+		Session:   a.SessionID,
+		Action:    a.Action,
+		Reason:    a.Reason,
+		Status:    a.Status,
+		DecidedBy: a.DecidedBy,
+		Created:   a.CreatedAt,
+		Pending:   a.Status == "pending",
+	}
 }

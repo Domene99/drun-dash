@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -72,6 +73,9 @@ func TestClientListSessions(t *testing.T) {
 	if len(list.Items) != 1 || list.Items[0].Status != "running" {
 		t.Fatalf("items = %+v", list.Items)
 	}
+	if list.Items[0].FanOutCeiling != 4 {
+		t.Errorf("fan_out_ceiling = %d, want 4", list.Items[0].FanOutCeiling)
+	}
 }
 
 func TestClientQuerySpend(t *testing.T) {
@@ -95,6 +99,109 @@ func TestClientQuerySpend(t *testing.T) {
 	}
 }
 
+func TestClientListBudgets(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/analytics/budgets" {
+			t.Errorf("path = %q, want /analytics/budgets", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"items":[{"id":"b1","name":"Monthly","limit":1000,"spent":250,"currency":"USD","period":"monthly"}]}`))
+	})
+
+	list, err := c.ListBudgets(context.Background(), "tok")
+	if err != nil {
+		t.Fatalf("ListBudgets: %v", err)
+	}
+	if len(list.Items) != 1 {
+		t.Fatalf("items = %+v", list.Items)
+	}
+	b := list.Items[0]
+	if b.Name != "Monthly" || b.Limit != 1000 || b.Spent != 250 || b.Period != "monthly" {
+		t.Errorf("budget = %+v", b)
+	}
+}
+
+func TestClientListApprovals(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/approvals" {
+			t.Errorf("path = %q, want /approvals", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("status"); got != "pending" {
+			t.Errorf("status = %q, want pending", got)
+		}
+		_, _ = w.Write([]byte(`{"items":[{"id":"ap1","session_id":"s1","action":"spawn subagent","status":"pending","created_at":"2026-07-01T00:00:00Z"}]}`))
+	})
+
+	list, err := c.ListApprovals(context.Background(), "tok", "pending")
+	if err != nil {
+		t.Fatalf("ListApprovals: %v", err)
+	}
+	if len(list.Items) != 1 || list.Items[0].Status != "pending" || list.Items[0].Action != "spawn subagent" {
+		t.Fatalf("items = %+v", list.Items)
+	}
+}
+
+func TestClientListApprovalsNoStatus(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.URL.Query()["status"]; ok {
+			t.Errorf("status param should be omitted when empty: %v", r.URL.Query())
+		}
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	})
+
+	if _, err := c.ListApprovals(context.Background(), "tok", ""); err != nil {
+		t.Fatalf("ListApprovals: %v", err)
+	}
+}
+
+func TestClientDecideApproval(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %q, want POST", r.Method)
+		}
+		if r.URL.Path != "/approvals/ap1/decision" {
+			t.Errorf("path = %q, want /approvals/ap1/decision", r.URL.Path)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
+		var body struct {
+			Decision string `json:"decision"`
+			Reason   string `json:"reason"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body.Decision != "approve" || body.Reason != "looks fine" {
+			t.Errorf("body = %+v", body)
+		}
+		_, _ = w.Write([]byte(`{"id":"ap1","session_id":"s1","action":"spawn","status":"approved","decided_by":"user-1","created_at":"2026-07-01T00:00:00Z"}`))
+	})
+
+	ap, err := c.DecideApproval(context.Background(), "tok", "ap1", "approve", "looks fine")
+	if err != nil {
+		t.Fatalf("DecideApproval: %v", err)
+	}
+	if ap.Status != "approved" || ap.DecidedBy != "user-1" {
+		t.Errorf("approval = %+v", ap)
+	}
+}
+
+func TestClientDecideApprovalConflict(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"code":"already_decided","message":"already decided"}`))
+	})
+
+	_, err := c.DecideApproval(context.Background(), "tok", "ap1", "approve", "")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err = %v, want *APIError", err)
+	}
+	if apiErr.Status != http.StatusConflict || apiErr.Message != "already decided" {
+		t.Errorf("apiErr = %+v", apiErr)
+	}
+}
+
 func TestClientUnauthorized(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -104,6 +211,18 @@ func TestClientUnauthorized(t *testing.T) {
 	_, err := c.Whoami(context.Background(), "bad")
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("Whoami err = %v, want ErrUnauthorized", err)
+	}
+}
+
+func TestClientDecideApprovalUnauthorized(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":"unauthorized","message":"authentication required"}`))
+	})
+
+	_, err := c.DecideApproval(context.Background(), "tok", "ap1", "deny", "")
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("DecideApproval err = %v, want ErrUnauthorized", err)
 	}
 }
 

@@ -1,0 +1,88 @@
+package views
+
+// SpendPageData is the view model for the Spend page: the finance view. It
+// pairs the spend total and per-group breakdown with budget utilization. The
+// two sections fail independently, each carrying its own error string so one
+// degraded endpoint does not blank the page.
+type SpendPageData struct {
+	Window       string
+	Total        string
+	Groups       []SpendRow
+	SpendError   string
+	Budgets      []BudgetRow
+	BudgetsError string
+}
+
+// BudgetRow is one row of the budget-utilization table. Spent, Limit, and
+// Utilization are pre-formatted display strings; Over marks a budget whose
+// spend has reached or exceeded its limit so the view can flag it.
+type BudgetRow struct {
+	Name        string
+	Period      string
+	Spent       string
+	Limit       string
+	Utilization string
+	Over        bool
+}
+
+// Spend renders the finance view: total spend over the window, the per-group
+// breakdown, and configured budgets with their utilization.
+templ Spend(data SpendPageData) {
+	@Layout("Spend") {
+		<section class="card">
+			<div class="summary-head">
+				<h1>Spend { data.Window }</h1>
+				<span class="metric-value">{ data.Total }</span>
+			</div>
+			if data.SpendError != "" {
+				<p class="error" role="alert">{ data.SpendError }</p>
+			} else if len(data.Groups) == 0 {
+				<p class="muted">No spend in this window.</p>
+			} else {
+				<table>
+					<thead>
+						<tr><th>Group</th><th>Amount</th><th>Tokens</th></tr>
+					</thead>
+					<tbody>
+						for _, g := range data.Groups {
+							<tr>
+								<td>{ g.Key }</td>
+								<td class="num">{ g.Amount }</td>
+								<td class="num">{ g.Tokens }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</section>
+		<section class="card">
+			<h2>Budgets</h2>
+			if data.BudgetsError != "" {
+				<p class="error" role="alert">{ data.BudgetsError }</p>
+			} else if len(data.Budgets) == 0 {
+				<p class="muted">No budgets configured.</p>
+			} else {
+				<table>
+					<thead>
+						<tr><th>Budget</th><th>Period</th><th>Spent</th><th>Limit</th><th>Utilization</th></tr>
+					</thead>
+					<tbody>
+						for _, b := range data.Budgets {
+							<tr>
+								<td>{ b.Name }</td>
+								<td>{ b.Period }</td>
+								<td class="num">{ b.Spent }</td>
+								<td class="num">{ b.Limit }</td>
+								if b.Over {
+									<td class="num error">{ b.Utilization }</td>
+								} else {
+									<td class="num">{ b.Utilization }</td>
+								}
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</section>
+	}
+}

@@ -12,9 +12,10 @@
 package views
 
 // htmxScriptURL is the CDN location of the HTMX runtime pulled into every page
-// by [Layout]. HTMX powers the dashboard's self-refreshing summary fragment;
-// pinning an exact version keeps behavior reproducible. Swap this for a
-// vendored asset if serving from a CDN is undesirable in your deployment.
+// by [Layout]. HTMX powers the dashboard's self-refreshing summary fragment and
+// the approvals row-swap; pinning an exact version keeps behavior reproducible.
+// Swap this for a vendored asset if serving from a CDN is undesirable in your
+// deployment.
 const htmxScriptURL = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"
 
 // Layout is the base HTML shell shared by every admin-ui page. It renders the
@@ -90,6 +91,16 @@ templ Layout(title string) {
 				th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #eceff3; font-size: 0.9rem; }
 				th { color: #667085; font-weight: 600; }
 				td.num { text-align: right; font-variant-numeric: tabular-nums; }
+				.row-actions { display: flex; gap: 0.5rem; }
+				td button {
+					border: 1px solid #cbd5e1;
+					background: #fff;
+					border-radius: 4px;
+					padding: 0.25rem 0.7rem;
+					cursor: pointer;
+					font-size: 0.85rem;
+				}
+				td button.deny { border-color: #f0c2bc; color: #b42318; }
 				form.signin label { display: block; font-weight: 600; margin-bottom: 0.35rem; }
 				form.signin textarea {
 					width: 100%;
@@ -114,6 +125,9 @@ templ Layout(title string) {
 				<span class="brand">drun-dash</span>
 				<nav>
 					<a href="/">Dashboard</a>
+					<a href="/sessions">Sessions</a>
+					<a href="/spend">Spend</a>
+					<a href="/approvals">Approvals</a>
 				</nav>
 				<form method="post" action="/logout" class="logout">
 					<button type="submit">Sign out</button>
