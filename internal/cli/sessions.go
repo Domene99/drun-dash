@@ -19,7 +19,8 @@ import (
 //
 // It mirrors the `agents` command exactly: the same Bearer-token loading (via
 // internal/clitoken), the same --server / env base-URL mechanism, the same flat
-// Error decoding for non-2xx, and the same not-logged-in behavior.
+// Error decoding for non-2xx, and the same not-logged-in behavior. The write
+// side (launch/terminate) lives in session_launch.go under the same verb.
 
 // session mirrors the Session schema in openapi/v1.yaml. Optional integers are
 // pointers so "unset" is distinguishable from a zero value.
@@ -42,7 +43,9 @@ type sessionList struct {
 	NextCursor string    `json:"next_cursor,omitempty"`
 }
 
-// sessionsCmd dispatches the `sessions` subcommands (list, get).
+// sessionsCmd dispatches the `sessions`/`session` subcommands. `list` and `get`
+// are read-only (this file); `launch` and `terminate` drive session lifecycle
+// (session_launch.go). Both the plural and singular verbs reach this dispatcher.
 func sessionsCmd(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		sessionsUsage(stderr)
@@ -53,6 +56,10 @@ func sessionsCmd(args []string, stdout, stderr io.Writer) int {
 		return sessionsListCmd(args[1:], stdout, stderr)
 	case "get":
 		return sessionsGetCmd(args[1:], stdout, stderr)
+	case "launch":
+		return sessionLaunchCmd(args[1:], stdout, stderr)
+	case "terminate":
+		return sessionTerminateCmd(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		sessionsUsage(stdout)
 		return 0
@@ -63,15 +70,17 @@ func sessionsCmd(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// sessionsUsage writes help for the `sessions` command tree.
+// sessionsUsage writes help for the `sessions`/`session` command tree.
 func sessionsUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage: drun-dash sessions <subcommand> [flags]
 
-Read-only access to governed agent sessions.
+Manage governed agent sessions. (The singular "session" is an alias.)
 
 Subcommands:
-  list                 List sessions (GET /sessions)
-  get <sessionId>      Show a single session's detail (GET /sessions/{sessionId})
+  list                      List sessions (GET /sessions)
+  get <sessionId>           Show a single session's detail (GET /sessions/{sessionId})
+  launch --agent <id>       Launch a governed session (POST /sessions/launch)
+  terminate <sessionId>     Terminate a session (POST /sessions/{sessionId}/terminate)
 
 Run "drun-dash sessions <subcommand> -h" for subcommand-specific flags.
 `)
