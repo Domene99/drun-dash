@@ -3,6 +3,7 @@ module github.com/Domene99/drun-dash
 go 1.22.0
 
 require (
+	github.com/a-h/templ v0.2.793
 	github.com/coreos/go-oidc/v3 v3.11.0
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/golang-jwt/jwt/v5 v5.2.1

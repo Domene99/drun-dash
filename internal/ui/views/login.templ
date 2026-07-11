@@ -1,0 +1,35 @@
+package views
+
+// LoginData is the view model for the login page. Error, when non-empty, holds
+// a human-readable message explaining why a prior sign-in attempt failed (an
+// empty token, or a token the control plane rejected).
+type LoginData struct {
+	// Error is shown as an alert above the form when non-empty.
+	Error string
+}
+
+// Login renders the sign-in page. For this bounded v1 shell the operator pastes
+// a control-plane session token obtained out-of-band (via `drun-dash login` or
+// POST /auth/session); the server stores it in a secure, HttpOnly cookie. The
+// full OIDC authorization-code browser flow is a documented follow-up (see
+// internal/ui/README.md).
+templ Login(data LoginData) {
+	@Layout("Sign in") {
+		<section class="card">
+			<h1>Sign in</h1>
+			<p class="muted">
+				Paste a control-plane session token to open the dashboard. Obtain
+				one out-of-band with <code>drun-dash login</code> or by calling
+				<code>POST /auth/session</code>.
+			</p>
+			if data.Error != "" {
+				<p class="error" role="alert">{ data.Error }</p>
+			}
+			<form method="post" action="/login" class="signin">
+				<label for="token">Session token</label>
+				<textarea id="token" name="token" rows="4" required autofocus placeholder="eyJhbGciOi..."></textarea>
+				<button type="submit">Sign in</button>
+			</form>
+		</section>
+	}
+}
