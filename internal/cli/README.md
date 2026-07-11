@@ -20,6 +20,8 @@ lives here so tests exercise every subcommand in-process with buffers.
 |---------------------|--------|------|-------|
 | `login`             | real   | 0/1  | Runs the OAuth 2.0 device-authorization flow and stores the session token. |
 | `whoami`            | real   | 0/1  | Reports the authenticated member via `GET /auth/whoami`, or "Not logged in". |
+| `agents list`       | real   | 0/1  | Lists catalog agents via `GET /agents`, with `--limit`/`--cursor` paging. |
+| `agents get <id>`   | real   | 0/1  | Shows one agent via `GET /agents/{agentId}`; a `404` is a clear not-found. |
 | `config` (`env`)    | real   | 0    | Loads `config.Load()` and prints the resolved runtime configuration. |
 | `version` / `--version` | real | 0 | Prints `Version`. |
 | `help` / `-h` / `--help` | real | 0 | Prints usage listing every subcommand. |
@@ -43,6 +45,23 @@ grant (RFC 8628), per [ADR 0001](../../docs/adr/0001-authentication-and-session-
 `whoami` loads the stored token and calls `GET /auth/whoami` with
 `Authorization: Bearer <token>`, printing the returned `Identity`.
 
+## Agent catalog (`agents`)
+
+Read-only access to the organization's agent catalog, using the token stored by
+`login` (`Authorization: Bearer <token>`), against `openapi/v1.yaml`:
+
+- `agents list [--limit N] [--cursor C]` — `GET /agents` (`listAgents`). Prints
+  the returned `Agent` items as an aligned table. `--limit` / `--cursor` are
+  passed through as query params, and when the response carries a `next_cursor`
+  a "More available — re-run with --cursor …" hint is printed.
+- `agents get <agentId>` — `GET /agents/{agentId}` (`getAgent`). Prints the
+  agent detail; a `404` prints a clear not-found message and exits non-zero.
+
+With no stored token, both print "Not logged in." and exit non-zero without
+sending a request. Any other non-2xx response is surfaced via the flat `Error`
+envelope (`code` + `message`). `--server` overrides the base URL stored with the
+token, exactly as `whoami` does.
+
 ### Configuration
 
 | Setting | Flag | Env | Default |
@@ -52,15 +71,17 @@ grant (RFC 8628), per [ADR 0001](../../docs/adr/0001-authentication-and-session-
 | Requested scopes | `--scope SCOPES` | — | (none) |
 | Token storage dir | — | `DRUN_DASH_CONFIG_DIR` | `os.UserConfigDir()/drun-dash` |
 
-`whoami` accepts `--server` to override the base URL stored with the token;
-otherwise it reuses the server `login` authenticated against.
+`whoami` and `agents` accept `--server` to override the base URL stored with the
+token; otherwise they reuse the server `login` authenticated against.
 
 ## Testing
 
-Both commands are driven against an `httptest` mock of the device endpoints —
-no real network. The poll loop takes an injectable `clock` so `slow_down` and
-expiry are tested deterministically without real sleeps. Token storage is
-redirected to a temp dir via `DRUN_DASH_CONFIG_DIR`.
+Commands are driven against an `httptest` mock of the control-plane endpoints —
+no real network. The device poll loop takes an injectable `clock` so `slow_down`
+and expiry are tested deterministically without real sleeps, and the `agents`
+commands assert the Bearer token, pagination pass-through, the not-found path,
+and the not-logged-in path. Token storage is redirected to a temp dir via
+`DRUN_DASH_CONFIG_DIR`.
 
 ## Not implemented yet
 

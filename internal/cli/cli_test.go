@@ -18,13 +18,13 @@ func TestRun(t *testing.T) {
 			name:       "no args prints usage on stderr",
 			args:       nil,
 			wantCode:   2,
-			wantStderr: []string{"Usage:", "login", "whoami", "config", "version"},
+			wantStderr: []string{"Usage:", "login", "whoami", "agents", "config", "version"},
 		},
 		{
 			name:       "help prints usage on stdout",
 			args:       []string{"help"},
 			wantCode:   0,
-			wantStdout: []string{"Usage:", "login", "whoami", "config"},
+			wantStdout: []string{"Usage:", "login", "whoami", "agents", "config"},
 		},
 		{
 			name:       "-h alias prints usage on stdout",
