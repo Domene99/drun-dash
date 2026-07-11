@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,7 +9,9 @@ import (
 )
 
 // testRouter builds the router with a logger that discards output so tests do
-// not spam stdout.
+// not spam stdout. Callers that exercise the broker route should set
+// LLM_UPSTREAM_BASE_URL (via t.Setenv) before calling this, since the upstream
+// is read once at construction.
 func testRouter() http.Handler {
 	return NewRouter(slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
@@ -29,34 +30,6 @@ func TestHealthz(t *testing.T) {
 	}
 	if body := rec.Body.String(); body != `{"status":"ok"}` {
 		t.Errorf("body = %q, want %q", body, `{"status":"ok"}`)
-	}
-}
-
-func TestChatCompletionsNotImplemented(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	rec := httptest.NewRecorder()
-
-	testRouter().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotImplemented)
-	}
-	if got, want := rec.Header().Get("Content-Type"), "application/json; charset=utf-8"; got != want {
-		t.Errorf("Content-Type = %q, want %q", got, want)
-	}
-
-	var body struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
-	if body.Code != "not_implemented" {
-		t.Errorf("code = %q, want %q", body.Code, "not_implemented")
-	}
-	if body.Message == "" {
-		t.Error("message is empty, want a human-readable explanation")
 	}
 }
 
