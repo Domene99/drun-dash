@@ -17,7 +17,7 @@ per-call grant validation and metering resolve through.
 | Method | Path                   | Behavior                                                        |
 | ------ | ---------------------- | -------------------------------------------------------------- |
 | `GET`  | `/healthz`             | `200` `{"status":"ok"}`                                        |
-| `POST` | `/v1/chat/completions` | Validate the credential grant, reverse-proxy to the upstream (injecting the master credential), stream, and meter |
+| `POST` | `/v1/chat/completions` | Validate the credential grant, enforce the org's hard budget caps, reverse-proxy to the upstream (injecting the master credential), stream, and meter |
 
 `/v1/chat/completions` forwards to `<upstream>/v1/chat/completions` and streams
 the response back **unbuffered** (see [`broker`](./broker.go)):
@@ -48,9 +48,40 @@ bearer token; the broker, on each request:
 4. enforces the grant's `scopes`: the route requires the `chat.completions`
    operation; a grant that does not authorize it → **`403`**.
 
-Only after all four pass is the call forwarded. The `401`/`403` bodies are flat
-`httpx` error envelopes (`unauthorized` / `forbidden`), matching the OpenAPI
-`Error` contract.
+Only after all four pass — and the org's budget check below — is the call
+forwarded. The `401`/`403` bodies are flat `httpx` error envelopes
+(`unauthorized` / `forbidden`), matching the OpenAPI `Error` contract.
+
+## Budget enforcement (ADR-0003 §5)
+
+After grant validation and **before** any credential injection or forwarding,
+the broker enforces the calling org's **hard budget caps**. It resolves the
+session's `org_id` (from the validated grant → session) and calls
+`store.AnalyticsStore.BudgetUtilization`, which returns each budget rule's
+current-window spend against its hard cap. If **any** rule has reached its cap
+(`Spent >= Limit`), the call is **refused** with
+
+```
+429 {"code":"budget_exceeded", "message":"organization budget \"<name>\" ..."}
+```
+
+and the upstream is **never contacted** — so a blocked call injects no
+credential and is never metered. This is the design's request-path spend
+control: spend is stopped at the **next** call after a cap is hit. Rules with no
+hard cap (a SQL-NULL limit) impose no ceiling and are skipped. The check **fails
+closed**: if the utilisation lookup errors, the broker answers `500` rather than
+forwarding, since it cannot prove the org is under cap.
+
+**v1 scope.** Caps are enforced at the **org level** using the existing org-wide
+aggregation. Two deliberate follow-ups:
+
+- **Scoped caps.** Per-member/agent/team budget rules are not yet narrowed by
+  scope here — every rule is compared against org-wide spend. The store already
+  carries the rule scope; wiring it through the aggregation is the next step.
+- **Redis running counter.** The check adds a DB aggregation to the hot path on
+  every call. That per-call latency is accepted for v1 per the design's stated
+  metering tradeoff; a Redis running counter (incremented at metering time) is
+  the planned optimization to avoid re-aggregating on each request.
 
 ## Credential injection
 
@@ -84,8 +115,8 @@ the session, `endpoint_id` from the grant, and `prompt_tokens`/
 non-streamed JSON `usage` object and the trailing `usage` event of an SSE stream
 (when the client opted into it) are recognized. Metering is best-effort: a
 response that reports no usage records nothing, and a write failure is logged,
-not surfaced to the client. This is the metering **seam**; budget enforcement is
-a later batch.
+not surfaced to the client. Budget enforcement (above) reads these same
+aggregated `usage_events` to decide whether the next call is under cap.
 
 ## Upstream configuration
 
@@ -126,9 +157,9 @@ handler := proxy.NewRouter(logger, pool)
 
 The binary in [`cmd/llm-proxy`](../../cmd/llm-proxy) serves this handler with
 [`internal/httpserver`](../httpserver) on `PROXY_HTTP_ADDR` (default `:8081`).
-It opens the shared database pool (`DATABASE_URL`) for grant validation and
-metering. Set the upstream base URL and provide the master credential the
-endpoint's `secret_ref` maps to before starting it — under the dev
+It opens the shared database pool (`DATABASE_URL`) for grant validation, budget
+enforcement, and metering. Set the upstream base URL and provide the master
+credential the endpoint's `secret_ref` maps to before starting it — under the dev
 [`EnvVault`](../vault) backend `vault://dev/anthropic` maps to
 `DRUNDASH_SECRET_ANTHROPIC`:
 
