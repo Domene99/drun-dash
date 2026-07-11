@@ -68,11 +68,19 @@ var newTeamMembershipStore = func(q store.Querier) teamMembershipReader {
 	return store.NewTeamMembershipStore(q)
 }
 
-type policyVersionReader interface {
+// policyVersionStore is the shared slice of *[store.PolicyVersionStore] the
+// httpapi handlers use. launchSession only reads a pinned version back
+// (GetByID); the policy handlers additionally append versions (Create) and read
+// a policy's history (ListByPolicy). Keeping one seam avoids two package-level
+// factories over the same store — each handler simply calls the methods it
+// needs.
+type policyVersionStore interface {
 	GetByID(ctx context.Context, id string) (store.PolicyVersion, error)
+	Create(ctx context.Context, p store.CreatePolicyVersionParams) (store.PolicyVersion, error)
+	ListByPolicy(ctx context.Context, policyID string) ([]store.PolicyVersion, error)
 }
 
-var newPolicyVersionStore = func(q store.Querier) policyVersionReader {
+var newPolicyVersionStore = func(q store.Querier) policyVersionStore {
 	return store.NewPolicyVersionStore(q)
 }
 

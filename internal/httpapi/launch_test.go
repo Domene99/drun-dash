@@ -74,6 +74,16 @@ func (f *fakePolicyVersionStore) GetByID(_ context.Context, id string) (store.Po
 	return f.pv, nil
 }
 
+// Create and ListByPolicy satisfy the widened policyVersionStore seam; the
+// launch tests never exercise the write/history path, so they are unused stubs.
+func (f *fakePolicyVersionStore) Create(context.Context, store.CreatePolicyVersionParams) (store.PolicyVersion, error) {
+	return store.PolicyVersion{}, nil
+}
+
+func (f *fakePolicyVersionStore) ListByPolicy(context.Context, string) ([]store.PolicyVersion, error) {
+	return nil, nil
+}
+
 type fakeSessionLaunchWriter struct {
 	session store.Session
 	err     error
@@ -180,7 +190,7 @@ func setLaunchSeams(t *testing.T, f *launchFixture) {
 	newAgentVersionStore = func(store.Querier) agentVersionReader { return f.versions }
 	newEntitlementStore = func(store.Querier) entitlementReader { return f.ents }
 	newTeamMembershipStore = func(store.Querier) teamMembershipReader { return f.teams }
-	newPolicyVersionStore = func(store.Querier) policyVersionReader { return f.policies }
+	newPolicyVersionStore = func(store.Querier) policyVersionStore { return f.policies }
 	newSessionLaunchWriter = func(*db.Pool) sessionLaunchWriter { return f.writer }
 	t.Cleanup(func() {
 		newAgentStore, newAgentVersionStore, newEntitlementStore, newTeamMembershipStore, newPolicyVersionStore, newSessionLaunchWriter = oa, oav, oe, ot, op, ow
