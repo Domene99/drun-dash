@@ -15,10 +15,11 @@ import (
 
 // testRouter builds the router with a logger that discards output so tests do
 // not spam stdout, plus any readiness checkers the test wants wired into
-// /readyz.
+// /readyz. Auth is not wired here; the auth vertical is covered end-to-end in
+// internal/httpapi.
 func testRouter(checkers ...health.Named) http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return newRouter(logger, checkers...)
+	return newRouter(logger, nil, checkers...)
 }
 
 func TestHealthz(t *testing.T) {
