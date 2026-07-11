@@ -180,6 +180,37 @@ type ApprovalList struct {
 	NextCursor string     `json:"next_cursor,omitempty"`
 }
 
+// TrajectoryField mirrors the TrajectoryField schema: one captured field within
+// a trajectory event. Value is present only for payload-class fields the policy
+// permitted; ByteSize is a pointer so an absent size differs from zero.
+type TrajectoryField struct {
+	Key        string          `json:"key"`
+	FieldClass string          `json:"field_class"`
+	Value      json.RawMessage `json:"value,omitempty"`
+	ValueType  string          `json:"value_type,omitempty"`
+	ByteSize   *int64          `json:"byte_size,omitempty"`
+}
+
+// TrajectoryEvent mirrors the TrajectoryEvent schema: one node in a session's
+// captured decision graph. ParentEventID links a child to its parent event;
+// root events leave it empty. FieldClass is the event's capture class
+// (structure or payload).
+type TrajectoryEvent struct {
+	EventID       string            `json:"event_id"`
+	Type          string            `json:"type"`
+	OccurredAt    string            `json:"occurred_at"`
+	FieldClass    string            `json:"field_class"`
+	ParentEventID string            `json:"parent_event_id,omitempty"`
+	Fields        []TrajectoryField `json:"fields,omitempty"`
+}
+
+// TrajectoryEventList mirrors the TrajectoryEventList schema: a page of a
+// session's trajectory events, forming a tree via parent_event_id.
+type TrajectoryEventList struct {
+	Items      []TrajectoryEvent `json:"items"`
+	NextCursor string            `json:"next_cursor,omitempty"`
+}
+
 // Whoami calls GET /auth/whoami and returns the authenticated identity.
 func (c *Client) Whoami(ctx context.Context, token string) (*Identity, error) {
 	var id Identity
@@ -267,6 +298,19 @@ func (c *Client) DecideApproval(ctx context.Context, token, id, decision, reason
 		return nil, err
 	}
 	return &approval, nil
+}
+
+// GetSessionTrajectory calls GET /sessions/{sessionId}/trajectory and returns
+// the session's recorded trajectory events (the fork/rollback decision graph).
+// The events form a tree via parent_event_id; the caller reconstructs and
+// renders it.
+func (c *Client) GetSessionTrajectory(ctx context.Context, token, sessionID string) (*TrajectoryEventList, error) {
+	var list TrajectoryEventList
+	path := "/sessions/" + url.PathEscape(sessionID) + "/trajectory"
+	if err := c.getJSON(ctx, token, path, nil, &list); err != nil {
+		return nil, err
+	}
+	return &list, nil
 }
 
 // getJSON issues an authenticated GET to path (with optional query params) and

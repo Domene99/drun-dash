@@ -91,7 +91,7 @@ func Sessions(data SessionsData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<table><thead><tr><th>Session</th><th>Agent</th><th>Status</th><th>Created</th><th>Fan-out</th></tr></thead> <tbody>")
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<table><thead><tr><th>Session</th><th>Agent</th><th>Status</th><th>Created</th><th>Fan-out</th><th>Trajectory</th></tr></thead> <tbody>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -161,7 +161,20 @@ func Sessions(data SessionsData) templ.Component {
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</td></tr>")
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</td><td><a href=\"")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var9 string
+					templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs("/sessions/" + s.ID + "/trajectory")
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/views/sessions.templ`, Line: 46, Col: 60}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("\">view trajectory</a></td></tr>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}

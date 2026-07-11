@@ -29,7 +29,8 @@ cmd/admin-ui/main.go
   and is aware of the flat `Error` envelope (`{code, message}`, per ADR-0002). A
   `401` maps to the `ErrUnauthorized` sentinel; other non-2xx responses map to
   `*APIError`. Read helpers: `Whoami`, `ListAgents`, `ListSessions`,
-  `QuerySpend`, `ListBudgets`, `ListApprovals`. Write helper: `DecideApproval`
+  `QuerySpend`, `ListBudgets`, `ListApprovals`, `GetSessionTrajectory`
+  (`GET /sessions/{sessionId}/trajectory`). Write helper: `DecideApproval`
   (`POST /approvals/{id}/decision`).
 - **`server.go`** — a `chi` router and the request handlers. Routes:
   - `GET /healthz` — static liveness probe.
@@ -39,6 +40,8 @@ cmd/admin-ui/main.go
   - `GET /` — the dashboard (behind auth middleware).
   - `GET /fragments/summary` — the HTMX-refreshed live-overview fragment.
   - `GET /sessions` — the Sessions page (flight recorder).
+  - `GET /sessions/{sessionId}/trajectory` — the forensic trajectory replay
+    viewer (the session's captured decision graph).
   - `GET /spend` — the Spend page (finance view): total, per-group breakdown, and
     budget utilization.
   - `GET /approvals` — the Approvals inbox.
@@ -58,6 +61,18 @@ cmd/admin-ui/main.go
   window plus a per-agent breakdown, and a budgets table showing spent vs limit
   and utilization (a budget at/over its limit is flagged). The spend and budgets
   sections fail independently, so one degraded endpoint does not hide the other.
+- **Trajectory** (`views/trajectory.templ`) — the **forensic trajectory replay
+  viewer**, the design's signature audit artifact. Given a session it fetches
+  `GET /sessions/{sessionId}/trajectory` and reconstructs the flat
+  `TrajectoryEvent` list into a tree (roots are events with no/absent
+  `parent_event_id`; children are grouped by parent). The tree is flattened
+  **depth-first in occurrence order** in Go (`trajectoryRows`) and rendered as an
+  indented table: each row shows the event type, a field/tool summary (payload
+  fields show their captured value; structure fields show type and byte size),
+  the `field_class` **structure**/**payload** badge, and the occurrence time. A
+  legend explains the badges. The Sessions table links each row to its
+  trajectory view. A `404` (unknown session) is surfaced inline, not as a blank
+  page. Server-rendered; no JS graph library (a richer canvas is a follow-up).
 - **Approvals** (`views/approvals.templ`) — the escalation queue. Pending items
   render **Approve** / **Deny** buttons that HTMX-`POST` to
   `/approvals/{id}/decision` and swap the single `<tr>` (outerHTML) with the
