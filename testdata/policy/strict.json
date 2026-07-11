@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0",
+  "org_id": "org_acme",
+  "policy_id": "pol_strict_ci",
+  "policy_version": 3,
+  "drun_config": {
+    "domain_allowlist": [
+      "registry.npmjs.org",
+      "pypi.org"
+    ],
+    "mount_allowlist": [
+      "/home/dev/project"
+    ],
+    "mount_overlay_paths": [],
+    "env_allowlist": [
+      "PATH",
+      "HOME",
+      "LANG"
+    ],
+    "bash_command_allowlist": [
+      "git",
+      "go",
+      "node",
+      "npm",
+      "python3",
+      "pip",
+      "ls",
+      "cat",
+      "grep",
+      "sed",
+      "awk",
+      "make"
+    ],
+    "bash_command_denylist": [
+      "curl",
+      "wget",
+      "nc",
+      "ssh",
+      "scp",
+      "sudo"
+    ],
+    "bash_timeout_ms": 30000,
+    "fetch_timeout_ms": 10000,
+    "connect_timeout_ms": 3000,
+    "max_workspace_mb": 512,
+    "max_sessions": 3,
+    "max_checkpoints": 50,
+    "session_idle_timeout_secs": 900
+  },
+  "issued_at": "2026-07-11T00:00:00Z",
+  "expires_at": "2026-07-18T00:00:00Z",
+  "content_hash": "sha256:f3b8dd841d8c3f8598069b3d70627af14d64290a73f021bd1126ad45feff2df5",
+  "signature": "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+}

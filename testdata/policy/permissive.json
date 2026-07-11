@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0",
+  "org_id": "org_acme",
+  "policy_id": "pol_permissive_internal",
+  "policy_version": 4,
+  "drun_config": {
+    "domain_allowlist": [
+      "*.example.com",
+      "registry.npmjs.org",
+      "pypi.org",
+      "files.pythonhosted.org",
+      "github.com",
+      "*.githubusercontent.com",
+      "proxy.golang.org",
+      "sum.golang.org",
+      "*.docker.io",
+      "ghcr.io"
+    ],
+    "mount_allowlist": [
+      "/home/dev",
+      "/opt/shared",
+      "/mnt/datasets"
+    ],
+    "mount_overlay_paths": [
+      "node_modules",
+      ".venv",
+      "vendor",
+      "target",
+      ".gradle"
+    ],
+    "env_allowlist": [
+      "PATH",
+      "HOME",
+      "LANG",
+      "LC_ALL",
+      "TZ",
+      "TERM",
+      "AWS_PROFILE",
+      "AWS_REGION",
+      "DOCKER_HOST",
+      "GOFLAGS",
+      "NPM_CONFIG_REGISTRY"
+    ],
+    "bash_command_allowlist": [],
+    "bash_command_denylist": [
+      "sudo"
+    ],
+    "bash_timeout_ms": 600000,
+    "fetch_timeout_ms": 60000,
+    "connect_timeout_ms": 10000,
+    "max_workspace_mb": 16384,
+    "max_sessions": 50,
+    "max_checkpoints": 1000,
+    "session_idle_timeout_secs": 14400
+  },
+  "issued_at": "2026-07-11T00:00:00Z",
+  "expires_at": "2026-10-11T00:00:00Z",
+  "content_hash": "sha256:2b0776994b8c45949c003df3724ee3dc17e30def3fd067a5d3455ed45f4bef7e",
+  "signature": "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+}
