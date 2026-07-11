@@ -3,10 +3,12 @@
 The PostgreSQL persistence layer for drun-dash: small, hand-written
 repositories that map the control-plane schema to Go types.
 
-This package covers the **tenancy + identity** tables only (migrations
-`000001`–`000002`). It is the **reference pattern** that every later store
-package — catalog, budgets, telemetry — copies, so consistency here matters
-more than breadth.
+This package covers the **tenancy + identity** tables (migrations
+`000001`–`000002`) and the **agent-catalog domain** — model infrastructure,
+billing, and the catalog itself (migrations `000003`–`000004`). The tenancy
+repositories are the **reference pattern** every other store copies, so
+consistency across the package matters more than breadth. The runtime /
+telemetry tables (`000005`–`000006`) are intentionally not covered here.
 
 ## The pattern
 
@@ -35,6 +37,8 @@ more than breadth.
 
 ## Stores
 
+### Tenancy + identity (`000001`–`000002`)
+
 | File | Type | Methods |
 |------|------|---------|
 | `organizations.go` | `OrganizationStore` | `Create`, `GetByID`, `GetBySlug`, `List` |
@@ -43,19 +47,57 @@ more than breadth.
 | `members.go` | `MemberStore` | `Create`, `GetByID`, `GetByIDPSubject`, `ListByOrg`, `SetActive` |
 | `memberships.go` | `TeamMembershipStore` | `Add`, `Remove`, `ListMembers`, `ListTeams` |
 
-`models.go` holds the row structs (`Organization`, `Environment`, `Team`,
-`Member`, `TeamMembership`) and the `Role` type — a typed string mirroring the
-`member_role` enum, with the `RoleAdmin` / `RoleMember` / `RoleAuditor`
-constants.
+### Model infrastructure (`000003`)
+
+| File | Type | Methods |
+|------|------|---------|
+| `model_endpoints.go` | `ModelEndpointStore` | `Create`, `GetByID`, `ListByOrg`, `SetActive` |
+| `routing_rules.go` | `RoutingRuleStore` | `Create`, `ListByOrg` (by priority), `Delete` |
+
+### Billing (`000004`)
+
+| File | Type | Methods |
+|------|------|---------|
+| `budgets.go` | `BudgetStore` | `Create`, `GetByID`, `ListByOrg` |
+| `budget_rules.go` | `BudgetRuleStore` | `Create`, `ListByBudget`, `Delete` |
+
+### Catalog (`000004`)
+
+| File | Type | Methods |
+|------|------|---------|
+| `policies.go` | `PolicyStore` | `Create`, `GetByID`, `ListByOrg`, `SetCurrentVersion` |
+| `policy_versions.go` | `PolicyVersionStore` | `Create`, `GetByPolicyAndVersion`, `ListByPolicy` |
+| `agents.go` | `AgentStore` | `Create`, `GetByID`, `ListByOrg`, `SetCurrentVersion` |
+| `agent_versions.go` | `AgentVersionStore` | `Create`, `GetByAgentAndVersion`, `ListByAgent` |
+| `entitlements.go` | `EntitlementStore` | `Create`, `ListByAgent`, `ListByMember`, `ListByTeam`, `Delete` |
+
+The row structs live in per-domain `models_*.go` files: `models.go` (tenancy +
+identity), `models_modelinfra.go`, `models_billing.go`, and
+`models_catalog.go`.
 
 ## Types & conventions
 
 - **UUIDs** are `string`; pgx scans and encodes them transparently.
 - **`TIMESTAMPTZ`** columns are `time.Time`.
-- **Nullable** columns (only `members.display_name` here) are pointer fields.
-- **Create** takes explicit column values (a `CreateMemberParams` struct for
-  the wider `members` insert) and returns the fully-populated stored row via
-  `RETURNING`, so callers see the database-assigned `id` and `created_at`.
+- **Nullable** columns are pointer fields (e.g. `Policy.Description`,
+  `Entitlement.MemberID`), except cap amounts (see below).
+- **Enums** are typed `string` constants with a `Valid()` method, mirroring
+  `Role`: `BudgetScope` (`organization` / `team` / `agent` / `member`) and
+  `BudgetWindow` (`daily` / `weekly` / `monthly`).
+- **`jsonb`** columns (`match_json`, `content_json`, `allowed_tools`,
+  `signing_json`) are `json.RawMessage`; a `nil` value means SQL NULL, and the
+  columns with a default (`match_json`, `allowed_tools`) fall back to it via
+  `COALESCE` when nil is passed.
+- **`numeric(20,6)`** cap amounts (`budget_rules.soft_cap` / `hard_cap`) are
+  `pgtype.Numeric` (part of pgx, not a new dependency) so exact decimals
+  round-trip without floating-point loss; an invalid value (`Valid == false`)
+  represents SQL NULL.
+- **Create** takes explicit column values (a `Create…Params` struct for the
+  wider inserts) and returns the fully-populated stored row via `RETURNING`, so
+  callers see database-assigned `id`, `created_at`, and defaults.
+- **`entitlements.Create`** validates the member-XOR-team rule in Go *before*
+  the insert, returning a descriptive error (not a store sentinel) when both or
+  neither principal is set, mirroring the database CHECK constraint.
 
 ## Usage
 
@@ -75,16 +117,17 @@ m, err := members.Create(ctx, store.CreateMemberParams{
 
 ## Tests
 
-Pure logic (error translation, `Role.Valid`) is covered by `store_test.go`,
-which runs with **no database**:
+Pure logic (error translation, `Role.Valid`, the enum `Valid()` methods, and
+the entitlement member-XOR-team pre-check) is covered by `store_test.go` and
+`catalog_test.go`, which run with **no database**:
 
 ```sh
 go test ./internal/store/...
 ```
 
-The database-touching tests live in `integration_test.go` behind the
-`integration` build tag and **skip** when Postgres is unreachable (mirroring
-`internal/db`):
+The database-touching tests live in `integration_test.go` and
+`catalog_integration_test.go` behind the `integration` build tag and **skip**
+when Postgres is unreachable (mirroring `internal/db`):
 
 ```sh
 # Uses config.DefaultDatabaseURL (local Docker dev stack) unless DATABASE_URL is set.
