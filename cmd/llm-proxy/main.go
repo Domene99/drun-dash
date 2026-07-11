@@ -1,21 +1,23 @@
 // Command llm-proxy runs the drun-dash OpenAI-compatible LLM call broker.
 //
-// This is a v1 scaffold: it exposes only a health endpoint and graceful
-// shutdown. The proxying and provider-routing logic arrives in later batches.
+// This is a v1 scaffold: it exposes a health endpoint and a placeholder broker
+// route (see internal/proxy), plus graceful shutdown. The credential-brokering
+// and provider-routing logic arrives in later batches.
 package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
-	"log"
-	"net/http"
+	"log/slog"
+	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/Domene99/drun-dash/internal/config"
+	"github.com/Domene99/drun-dash/internal/httpserver"
+	"github.com/Domene99/drun-dash/internal/log"
+	"github.com/Domene99/drun-dash/internal/proxy"
 )
 
 // version is overridable at build time via
@@ -23,7 +25,6 @@ import (
 var version = "dev"
 
 func main() {
-	addr := flag.String("addr", ":8081", "address to listen on")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -32,55 +33,35 @@ func main() {
 		return
 	}
 
-	if err := run(*addr); err != nil {
-		log.Fatalf("llm-proxy: %v", err)
+	if err := run(); err != nil {
+		slog.Error("llm-proxy exited", slog.Any("error", err))
+		os.Exit(1)
 	}
 }
 
-// run starts the HTTP server on addr and blocks until an interrupt signal is
-// received, then shuts down gracefully.
-func run(addr string) error {
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           newRouter(),
-		ReadHeaderTimeout: 10 * time.Second,
+// run loads configuration, builds the router, and serves until an interrupt or
+// termination signal triggers a graceful shutdown.
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
 	}
+
+	logger := log.New(cfg)
+	logger.Info("llm-proxy starting", slog.String("version", version), slog.String("env", cfg.Env))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	errCh := make(chan error, 1)
-	go func() {
-		log.Printf("llm-proxy %s listening on %s", version, addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-			return
-		}
-		errCh <- nil
-	}()
-
-	select {
-	case err := <-errCh:
-		return err
-	case <-ctx.Done():
-		log.Print("llm-proxy: shutdown signal received")
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	return httpserver.New(proxyServerConfig(cfg), proxy.NewRouter(logger), logger).Run(ctx)
 }
 
-// newRouter builds the HTTP router for the llm-proxy server.
-func newRouter() http.Handler {
-	r := chi.NewRouter()
-	r.Get("/healthz", healthz)
-	return r
-}
-
-// healthz reports server liveness.
-func healthz(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintln(w, `{"status":"ok"}`)
+// proxyServerConfig returns a shallow copy of cfg whose HTTPAddr is the proxy's
+// listen address (ProxyHTTPAddr). httpserver.New binds cfg.HTTPAddr (the
+// control-plane address), so the copy lets the proxy reuse the shared server
+// package verbatim without modifying it.
+func proxyServerConfig(cfg *config.Config) *config.Config {
+	proxyCfg := *cfg
+	proxyCfg.HTTPAddr = cfg.ProxyHTTPAddr
+	return &proxyCfg
 }
