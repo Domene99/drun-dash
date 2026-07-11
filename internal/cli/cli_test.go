@@ -51,16 +51,16 @@ func TestRun(t *testing.T) {
 			wantStderr: []string{"unknown command", "Usage:"},
 		},
 		{
-			name:       "login is a non-zero stub",
-			args:       []string{"login"},
-			wantCode:   1,
-			wantStderr: []string{"not implemented"},
+			name:       "login -h prints command usage",
+			args:       []string{"login", "-h"},
+			wantCode:   2,
+			wantStderr: []string{"Usage: drun-dash login", "device-authorization"},
 		},
 		{
-			name:       "whoami is a non-zero stub",
-			args:       []string{"whoami"},
-			wantCode:   1,
-			wantStderr: []string{"Not logged in"},
+			name:       "whoami -h prints command usage",
+			args:       []string{"whoami", "-h"},
+			wantCode:   2,
+			wantStderr: []string{"Usage: drun-dash whoami", "/auth/whoami"},
 		},
 	}
 
