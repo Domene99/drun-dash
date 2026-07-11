@@ -49,6 +49,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return agentsCmd(args[1:], stdout, stderr)
 	case "sessions", "session":
 		return sessionsCmd(args[1:], stdout, stderr)
+	case "approvals":
+		return approvalsCmd(args[1:], stdout, stderr)
 	case "spend":
 		return spendCmd(args[1:], stdout, stderr)
 	case "config", "env":
@@ -72,6 +74,7 @@ Commands:
   whoami     Show the currently authenticated member
   agents     List and inspect catalog agents
   sessions   List, inspect, launch, and terminate governed sessions
+  approvals  List and decide escalation-queue approval requests
   spend      Query aggregated LLM spend over a time window
   config     Print the resolved runtime configuration
   version    Print the CLI version

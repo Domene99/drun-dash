@@ -26,6 +26,8 @@ lives here so tests exercise every subcommand in-process with buffers.
 | `sessions get <id>` | real   | 0/1  | Shows one session via `GET /sessions/{sessionId}`; a `404` is a clear not-found. |
 | `sessions launch --agent <id>` | real | 0/1 | Launches a governed session via `POST /sessions/launch`; prints a summary + one-time `proxy_token`, `--json` dumps the full response; `403` is a clear "not entitled". |
 | `sessions terminate <id>` | real | 0/1 | Terminates a session via `POST /sessions/{sessionId}/terminate` (idempotent); unknown/forbidden surfaces the flat `Error`. |
+| `approvals list`    | real   | 0/1  | Lists escalation-queue requests via `GET /approvals`, with `--limit`/`--cursor` paging; pending rows are marked. |
+| `approvals decide <id>` | real | 0/1/2 | Decides a request via `POST /approvals/{approvalId}/decision`; `--decision` is validated to `approve`/`deny` before the call; a `409` (already decided) is a clear message. |
 | `spend`             | real   | 0/1  | Queries `GET /analytics/spend` with `--from`/`--to`/`--group-by`; prints total + groups. |
 | `config` (`env`)    | real   | 0    | Loads `config.Load()` and prints the resolved runtime configuration. |
 | `version` / `--version` | real | 0 | Prints `Version`. |
@@ -104,6 +106,26 @@ in `sessions.go`; the lifecycle halves (`launch`/`terminate`) in
 > configuring the local drun engine) is a later batch — for now `launch` only
 > displays / `--json`-dumps the response.
 
+## Approvals (`approvals`)
+
+The human reviewer's view of the escalation queue, using the same Bearer-token
+and `--server` mechanism, against `openapi/v1.yaml`. Creating approvals is a
+server/agent-side action (the LLM proxy raises them on a fail-closed decision),
+so the CLI focuses on the reviewer's list + decide. Both live in `approvals.go`.
+
+- `approvals list [--limit N] [--cursor C]` — `GET /approvals` (`listApprovals`).
+  Prints the returned `Approval` items as an aligned table (id, session id,
+  action, status, created-at), marking **pending** rows (the ones awaiting a
+  decision) with a `>`. `--limit` / `--cursor` are passed through as query
+  params, and a `next_cursor` yields a "More available — re-run with --cursor …"
+  hint.
+- `approvals decide <approvalId> --decision approve|deny [--reason TEXT]` —
+  `POST /approvals/{approvalId}/decision` (`decideApproval`). Sends the
+  `ApprovalDecision` and prints the recorded approval detail. `--decision` is
+  validated to `approve`/`deny` **before** the call — an invalid or missing
+  value is a usage error (exit 2, no request sent). A `409` (the request was
+  already decided) prints a clear message and exits non-zero.
+
 ## Spend (`spend`)
 
 Read-only access to aggregated LLM spend, using the same Bearer-token and
@@ -115,9 +137,9 @@ Read-only access to aggregated LLM spend, using the same Bearer-token and
   passed through as query params, and a bad value (e.g. an unknown `group_by`)
   surfaces the server's `400` flat `Error` (`code` + `message`).
 
-With no stored token, `sessions` and `spend` print "Not logged in." and exit
-non-zero without sending a request. Any other non-2xx response is surfaced via
-the flat `Error` envelope.
+With no stored token, `sessions`, `approvals`, and `spend` print "Not logged in."
+and exit non-zero without sending a request. Any other non-2xx response is
+surfaced via the flat `Error` envelope.
 
 ### Configuration
 
@@ -128,9 +150,9 @@ the flat `Error` envelope.
 | Requested scopes | `--scope SCOPES` | — | (none) |
 | Token storage dir | — | `DRUN_DASH_CONFIG_DIR` | `os.UserConfigDir()/drun-dash` |
 
-`whoami`, `agents`, `sessions`, and `spend` accept `--server` to override the
-base URL stored with the token; otherwise they reuse the server `login`
-authenticated against.
+`whoami`, `agents`, `sessions`, `approvals`, and `spend` accept `--server` to
+override the base URL stored with the token; otherwise they reuse the server
+`login` authenticated against.
 
 ## Testing
 
@@ -138,12 +160,13 @@ Commands are driven against an `httptest` mock of the control-plane endpoints �
 no real network (an in-memory `http.RoundTripper` serves the handler, so nothing
 binds a socket). The device poll loop takes an injectable `clock` so `slow_down`
 and expiry are tested deterministically without real sleeps, and the `agents`,
-`sessions`, and `spend` commands assert the Bearer token, query/pagination
-pass-through, the not-found and bad-request paths, and the not-logged-in path.
-The `sessions launch`/`terminate` tests additionally assert the POST body,
-the summary vs. `--json` output, the one-time `proxy_token` surfacing, and the
-`403`/flat-`Error` paths. Token storage is redirected to a temp dir via
-`DRUN_DASH_CONFIG_DIR`.
+`sessions`, `approvals`, and `spend` commands assert the Bearer token,
+query/pagination pass-through, the not-found and bad-request paths, and the
+not-logged-in path. The `sessions launch`/`terminate` tests additionally assert
+the POST body, the summary vs. `--json` output, the one-time `proxy_token`
+surfacing, and the `403`/flat-`Error` paths. The `approvals decide` tests assert
+the POST body, `--decision` validation, and the `409` (already decided) path.
+Token storage is redirected to a temp dir via `DRUN_DASH_CONFIG_DIR`.
 
 ## Not implemented yet
 
