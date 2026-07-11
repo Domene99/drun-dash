@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "event_id": "44444444-4444-4444-8444-444444444444",
+  "trajectory_id": "traj-7f3c",
+  "session_id": "b0392a4d-48e9-4a59-882b-1fd15dede731",
+  "node_id": "node-3",
+  "parent_node_id": "node-1",
+  "checkpoint_id": "1",
+  "tool_name": "session_fork",
+  "actor_member_id": "member-bob",
+  "timestamp": "2026-07-11T11:02:44Z",
+  "event_type": "fork",
+  "field_class": "structure",
+  "metadata": {
+    "packages": []
+  }
+}

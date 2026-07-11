@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "event_id": "22222222-2222-4222-8222-222222222222",
+  "trajectory_id": "traj-7f3c",
+  "session_id": "b0392a4d-48e9-4a59-882b-1fd15dede731",
+  "node_id": "node-1",
+  "parent_node_id": "node-0",
+  "checkpoint_id": "1",
+  "tool_name": "session_bash",
+  "actor_member_id": "member-alice",
+  "timestamp": "2026-07-11T10:57:12Z",
+  "event_type": "tool_call",
+  "field_class": "structure",
+  "metadata": {
+    "packages": ["go1.22"],
+    "token_counts": {
+      "input": 480,
+      "output": 132,
+      "total": 612
+    }
+  }
+}

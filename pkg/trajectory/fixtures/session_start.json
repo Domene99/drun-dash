@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "event_id": "11111111-1111-4111-8111-111111111111",
+  "trajectory_id": "traj-7f3c",
+  "session_id": "b0392a4d-48e9-4a59-882b-1fd15dede731",
+  "node_id": "node-0",
+  "checkpoint_id": "0",
+  "actor_member_id": "member-alice",
+  "timestamp": "2026-07-11T10:56:00Z",
+  "event_type": "session_start",
+  "field_class": "structure",
+  "metadata": {
+    "domains": [],
+    "packages": []
+  }
+}
