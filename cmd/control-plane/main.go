@@ -51,6 +51,10 @@ const (
 	envOIDCIssuer     = "CP_OIDC_ISSUER"
 	envOIDCClientID   = "CP_OIDC_CLIENT_ID"
 
+	// Device-authorization flow (ADR-0001 §2): the admin UI origin used to
+	// build the device-flow verification_uri (<base>/device) shown to the user.
+	envAdminUIBaseURL = "CP_ADMIN_UI_BASE_URL"
+
 	// Session-launch settings (ADR-0003): the bundle-signing key and its id,
 	// the proxy base URL handed to launched sessions, and the session lifetime
 	// governing both the bundle and the grant expiry.
@@ -65,6 +69,7 @@ const (
 	defaultAccessTokenTTL = 15 * time.Minute
 
 	defaultBundleSigningKID = "dev"
+	defaultAdminUIBaseURL   = "http://localhost:8080"
 	defaultProxyBaseURL     = "http://localhost:8081"
 	defaultSessionTTL       = 60 * time.Minute
 )
@@ -187,6 +192,7 @@ func buildAuthDeps(ctx context.Context, logger *slog.Logger, pool *db.Pool, redi
 	}
 	bundleKID := getEnv(envBundleSigningKID, defaultBundleSigningKID)
 	proxyBaseURL := getEnv(envProxyBaseURL, defaultProxyBaseURL)
+	adminUIBaseURL := getEnv(envAdminUIBaseURL, defaultAdminUIBaseURL)
 
 	sessionTTL := defaultSessionTTL
 	if raw := os.Getenv(envSessionTTL); raw != "" {
@@ -217,6 +223,7 @@ func buildAuthDeps(ctx context.Context, logger *slog.Logger, pool *db.Pool, redi
 		slog.String("oidc_issuer", oidcIssuer),
 		slog.String("bundle_kid", bundleKID),
 		slog.String("proxy_base_url", proxyBaseURL),
+		slog.String("admin_ui_base_url", adminUIBaseURL),
 		slog.Duration("session_ttl", sessionTTL),
 	)
 
@@ -225,6 +232,8 @@ func buildAuthDeps(ctx context.Context, logger *slog.Logger, pool *db.Pool, redi
 		Issuer:           issuer,
 		Verifier:         verifier,
 		Members:          store.NewMemberStore(pool),
+		Redis:            redisClient,
+		AdminUIBaseURL:   adminUIBaseURL,
 		Pool:             pool,
 		AccessTTL:        ttl,
 		BundleSigningKey: bundleKey,
