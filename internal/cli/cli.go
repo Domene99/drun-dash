@@ -47,6 +47,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return whoamiCmd(args[1:], stdout, stderr)
 	case "agents":
 		return agentsCmd(args[1:], stdout, stderr)
+	case "policies":
+		return policiesCmd(args[1:], stdout, stderr)
 	case "sessions", "session":
 		return sessionsCmd(args[1:], stdout, stderr)
 	case "approvals":
@@ -73,6 +75,7 @@ Commands:
   login      Authenticate this machine to the org (device-authorization flow)
   whoami     Show the currently authenticated member
   agents     List and inspect catalog agents
+  policies   List and inspect policies and their signed versions
   sessions   List, inspect, launch, and terminate governed sessions
   approvals  List and decide escalation-queue approval requests
   spend      Query aggregated LLM spend over a time window
