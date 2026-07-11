@@ -186,6 +186,35 @@ func TestClientDecideApproval(t *testing.T) {
 	}
 }
 
+func TestClientGetSessionTrajectory(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sessions/s1/trajectory" {
+			t.Errorf("path = %q, want /sessions/s1/trajectory", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer tok" {
+			t.Errorf("Authorization = %q, want Bearer tok", got)
+		}
+		_, _ = w.Write([]byte(`{"items":[` +
+			`{"event_id":"e1","type":"session_start","occurred_at":"2026-07-01T00:00:00Z","field_class":"structure"},` +
+			`{"event_id":"e2","type":"tool_call","occurred_at":"2026-07-01T00:00:01Z","field_class":"payload","parent_event_id":"e1","fields":[{"key":"tool_name","field_class":"payload","value":"search"}]}` +
+			`]}`))
+	})
+
+	list, err := c.GetSessionTrajectory(context.Background(), "tok", "s1")
+	if err != nil {
+		t.Fatalf("GetSessionTrajectory: %v", err)
+	}
+	if len(list.Items) != 2 {
+		t.Fatalf("items = %+v", list.Items)
+	}
+	if list.Items[1].ParentEventID != "e1" || list.Items[1].Type != "tool_call" {
+		t.Errorf("child event = %+v", list.Items[1])
+	}
+	if len(list.Items[1].Fields) != 1 || list.Items[1].Fields[0].Key != "tool_name" {
+		t.Errorf("child fields = %+v", list.Items[1].Fields)
+	}
+}
+
 func TestClientDecideApprovalConflict(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)

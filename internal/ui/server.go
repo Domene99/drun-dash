@@ -3,10 +3,13 @@ package ui
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -104,6 +107,7 @@ func (s *Server) routes() chi.Router {
 		r.Get("/", s.handleDashboard)
 		r.Get("/fragments/summary", s.handleSummaryFragment)
 		r.Get("/sessions", s.handleSessions)
+		r.Get("/sessions/{sessionId}/trajectory", s.handleTrajectory)
 		r.Get("/spend", s.handleSpend)
 		r.Get("/approvals", s.handleApprovals)
 		r.Post("/approvals/{id}/decision", s.handleApprovalDecision)
@@ -226,6 +230,30 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		data.Sessions = sessionDetailRows(list.Items)
 	}
 	s.render(w, r, http.StatusOK, views.Sessions(data))
+}
+
+// handleTrajectory renders the forensic trajectory replay viewer: the session's
+// captured decision graph (its fork/rollback event tree) reconstructed from the
+// flat event list and rendered depth-first with indentation. A rejected token
+// redirects to /login; any other control-plane error (for example a 404 for an
+// unknown session) is surfaced inline rather than blanking the page.
+func (s *Server) handleTrajectory(w http.ResponseWriter, r *http.Request) {
+	token := tokenFromContext(r.Context())
+	sessionID := chi.URLParam(r, "sessionId")
+
+	data := views.TrajectoryData{SessionID: sessionID}
+	list, err := s.client.GetSessionTrajectory(r.Context(), token, sessionID)
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		s.redirectToLogin(w, r)
+		return
+	case err != nil:
+		s.logger.ErrorContext(r.Context(), "admin-ui: get trajectory failed", slog.Any("error", err))
+		data.Error = "Could not load trajectory: " + readableError(err)
+	default:
+		data.Rows = trajectoryRows(list.Items)
+	}
+	s.render(w, r, http.StatusOK, views.Trajectory(data))
 }
 
 // handleSpend renders the Spend page: total spend and the per-agent breakdown
@@ -526,6 +554,105 @@ func sessionDetailRows(sessions []Session) []views.SessionDetailRow {
 		})
 	}
 	return rows
+}
+
+// trajectoryRows reconstructs the event tree from the flat list and flattens it
+// depth-first into display rows carrying an indentation depth. Roots are events
+// with no parent (or a parent absent from the page); siblings are ordered by
+// occurrence time (then event id for stability). A visited set guards against a
+// malformed list whose parent links form a cycle.
+func trajectoryRows(events []TrajectoryEvent) []views.TrajectoryRow {
+	known := make(map[string]bool, len(events))
+	for _, e := range events {
+		known[e.EventID] = true
+	}
+
+	children := make(map[string][]TrajectoryEvent)
+	var roots []TrajectoryEvent
+	for _, e := range events {
+		if e.ParentEventID == "" || !known[e.ParentEventID] {
+			roots = append(roots, e)
+			continue
+		}
+		children[e.ParentEventID] = append(children[e.ParentEventID], e)
+	}
+
+	byOccurrence := func(es []TrajectoryEvent) {
+		sort.SliceStable(es, func(i, j int) bool {
+			if es[i].OccurredAt != es[j].OccurredAt {
+				return es[i].OccurredAt < es[j].OccurredAt
+			}
+			return es[i].EventID < es[j].EventID
+		})
+	}
+	byOccurrence(roots)
+	for k := range children {
+		byOccurrence(children[k])
+	}
+
+	rows := make([]views.TrajectoryRow, 0, len(events))
+	visited := make(map[string]bool, len(events))
+	var walk func(e TrajectoryEvent, depth int)
+	walk = func(e TrajectoryEvent, depth int) {
+		if visited[e.EventID] {
+			return
+		}
+		visited[e.EventID] = true
+		rows = append(rows, views.TrajectoryRow{
+			Type:       e.Type,
+			Summary:    trajectorySummary(e.Fields),
+			FieldClass: e.FieldClass,
+			Occurred:   e.OccurredAt,
+			Depth:      depth,
+			Indent:     strings.Repeat("\u2014 ", depth),
+		})
+		for _, c := range children[e.EventID] {
+			walk(c, depth+1)
+		}
+	}
+	for _, e := range roots {
+		walk(e, 0)
+	}
+	return rows
+}
+
+// trajectorySummary renders a compact field/tool summary for a trajectory
+// event. Payload fields show their captured value; structure fields show their
+// type and byte size, so an operator can see the shape without the raw data.
+func trajectorySummary(fields []TrajectoryField) string {
+	if len(fields) == 0 {
+		return "\u2014"
+	}
+	parts := make([]string, 0, len(fields))
+	for _, f := range fields {
+		part := f.Key
+		switch {
+		case f.FieldClass == "payload" && len(f.Value) > 0:
+			part += "=" + summarizeValue(f.Value)
+		case f.ValueType != "" && f.ByteSize != nil:
+			part += fmt.Sprintf(" (%s, %dB)", f.ValueType, *f.ByteSize)
+		case f.ValueType != "":
+			part += " (" + f.ValueType + ")"
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// summarizeValue renders a captured payload value for display: a JSON string is
+// unquoted, anything else is shown as its compact JSON. Long values are
+// truncated so one field cannot dominate the row.
+func summarizeValue(raw json.RawMessage) string {
+	const max = 80
+	s := strings.TrimSpace(string(raw))
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		s = str
+	}
+	if len(s) > max {
+		s = s[:max] + "\u2026"
+	}
+	return s
 }
 
 // spendRows maps spend groups to display rows.

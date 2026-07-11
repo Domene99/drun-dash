@@ -33,7 +33,7 @@ templ Sessions(data SessionsData) {
 			} else {
 				<table>
 					<thead>
-						<tr><th>Session</th><th>Agent</th><th>Status</th><th>Created</th><th>Fan-out</th></tr>
+						<tr><th>Session</th><th>Agent</th><th>Status</th><th>Created</th><th>Fan-out</th><th>Trajectory</th></tr>
 					</thead>
 					<tbody>
 						for _, s := range data.Sessions {
@@ -43,6 +43,7 @@ templ Sessions(data SessionsData) {
 								<td>{ s.Status }</td>
 								<td>{ s.Created }</td>
 								<td class="num">{ s.FanOut }</td>
+								<td><a href={ "/sessions/" + s.ID + "/trajectory" }>view trajectory</a></td>
 							</tr>
 						}
 					</tbody>

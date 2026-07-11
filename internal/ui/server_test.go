@@ -67,6 +67,17 @@ func mockControlPlane(t *testing.T, status int) *httptest.Server {
 			`{"id":"ap2","session_id":"s2","action":"external call","status":"approved","decided_by":"user-9","created_at":"2026-07-01T00:00:00Z"}` +
 			`]}`))
 	})
+	mux.HandleFunc("/sessions/", func(w http.ResponseWriter, r *http.Request) {
+		if rejected(w) {
+			return
+		}
+		// A three-event tree: session_start (root) -> tool_call -> tool_result.
+		_, _ = w.Write([]byte(`{"items":[` +
+			`{"event_id":"e1","type":"session_start","occurred_at":"2026-07-01T00:00:00Z","field_class":"structure","fields":[{"key":"agent","field_class":"structure","value_type":"string","byte_size":8}]},` +
+			`{"event_id":"e2","type":"tool_call","occurred_at":"2026-07-01T00:00:01Z","field_class":"payload","parent_event_id":"e1","fields":[{"key":"tool_name","field_class":"payload","value":"search"}]},` +
+			`{"event_id":"e3","type":"tool_result","occurred_at":"2026-07-01T00:00:02Z","field_class":"structure","parent_event_id":"e2","fields":[{"key":"result","field_class":"structure","value_type":"object","byte_size":256}]}` +
+			`]}`))
+	})
 	mux.HandleFunc("/approvals/", func(w http.ResponseWriter, r *http.Request) {
 		if rejected(w) {
 			return
@@ -108,7 +119,7 @@ func TestUnauthenticatedRedirectsToLogin(t *testing.T) {
 	s := newServer(t, "http://control-plane.invalid")
 
 	// Every authenticated page must bounce an unauthenticated request to login.
-	for _, path := range []string{"/", "/sessions", "/spend", "/approvals"} {
+	for _, path := range []string{"/", "/sessions", "/sessions/s1/trajectory", "/spend", "/approvals"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, req)
@@ -314,7 +325,7 @@ func TestSessionsPageRenders(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Sessions", "Fan-out", "s1", "a1", "running", ">4<"} {
+	for _, want := range []string{"Sessions", "Fan-out", "s1", "a1", "running", ">4<", "Trajectory", `href="/sessions/s1/trajectory"`, "view trajectory"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("sessions page missing %q:\n%s", want, body)
 		}
@@ -418,6 +429,58 @@ func TestApprovalDecisionUnauthorizedUsesHXRedirect(t *testing.T) {
 	}
 	if got := rec.Header().Get("HX-Redirect"); got != "/login" {
 		t.Errorf("HX-Redirect = %q, want /login", got)
+	}
+}
+
+func TestTrajectoryPageRendersTree(t *testing.T) {
+	cp := mockControlPlane(t, http.StatusOK)
+	s := newServer(t, cp.URL)
+
+	rec := authedGet(t, s, "/sessions/s1/trajectory")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// The page renders the session id, a legend, both badges, and a field
+	// summary (payload value and structure type/size).
+	for _, want := range []string{"Trajectory", "s1", "legend", "session_start", "tool_call", "tool_result",
+		`class="badge structure"`, `class="badge payload"`, "tool_name=search", "result (object, 256B)"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("trajectory page missing %q:\n%s", want, body)
+		}
+	}
+	// Events render depth-first in occurrence order: root before its child
+	// before the grandchild.
+	iRoot := strings.Index(body, "session_start")
+	iChild := strings.Index(body, "tool_call")
+	iGrand := strings.Index(body, "tool_result")
+	if !(iRoot < iChild && iChild < iGrand) {
+		t.Errorf("events out of tree order: root=%d child=%d grand=%d", iRoot, iChild, iGrand)
+	}
+	// Nested events are indented (em-dash prefix inside the indent span).
+	if !strings.Contains(body, "\u2014 ") {
+		t.Errorf("nested events not indented:\n%s", body)
+	}
+}
+
+func TestTrajectoryPageSurfacesErrorReadably(t *testing.T) {
+	// A control-plane 404 (unknown session) must render a readable message.
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":"not_found","message":"session not found"}`))
+	}))
+	t.Cleanup(cp.Close)
+	s := newServer(t, cp.URL)
+
+	rec := authedGet(t, s, "/sessions/missing/trajectory")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Could not load trajectory") || !strings.Contains(body, "session not found") {
+		t.Errorf("trajectory error not surfaced readably:\n%s", body)
 	}
 }
 
