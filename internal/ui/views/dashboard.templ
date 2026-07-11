@@ -1,0 +1,172 @@
+package views
+
+// DashboardData is the fully-resolved view model for the dashboard page. It is
+// assembled by internal/ui from live control-plane responses; the views only
+// render it.
+type DashboardData struct {
+	// Identity is the authenticated principal, echoed in the page header.
+	Identity IdentityView
+	// Summary is the live overview (agents, sessions, spend) rendered inside
+	// the self-refreshing HTMX fragment.
+	Summary SummaryData
+}
+
+// IdentityView is the authenticated principal shown at the top of the
+// dashboard. Roles is pre-joined into a display string by internal/ui.
+type IdentityView struct {
+	Subject        string
+	OrganizationID string
+	Roles          string
+}
+
+// SummaryData is the live overview fragment's view model. Counts and amounts
+// are pre-formatted display strings so the templates stay import-free; the
+// per-section *Error fields carry a message when that control-plane call
+// failed, letting one degraded endpoint show an inline error without blanking
+// the whole page.
+type SummaryData struct {
+	AgentCount   string
+	SessionCount string
+	SpendTotal   string
+	SpendWindow  string
+
+	Agents   []AgentRow
+	Sessions []SessionRow
+	Spend    []SpendRow
+
+	AgentsError   string
+	SessionsError string
+	SpendError    string
+}
+
+// AgentRow is one row of the agents table.
+type AgentRow struct {
+	Name        string
+	Version     string
+	Description string
+}
+
+// SessionRow is one row of the sessions table.
+type SessionRow struct {
+	ID      string
+	Agent   string
+	Status  string
+	Created string
+}
+
+// SpendRow is one row of the spend breakdown table.
+type SpendRow struct {
+	Key    string
+	Amount string
+	Tokens string
+}
+
+// Dashboard renders the authenticated landing page: the caller's identity plus
+// the live summary fragment.
+templ Dashboard(data DashboardData) {
+	@Layout("Dashboard") {
+		<section class="card">
+			<h1>Dashboard</h1>
+			<dl>
+				<dt>Subject</dt>
+				<dd>{ data.Identity.Subject }</dd>
+				<dt>Organization</dt>
+				<dd>{ data.Identity.OrganizationID }</dd>
+				<dt>Roles</dt>
+				<dd>{ data.Identity.Roles }</dd>
+			</dl>
+		</section>
+		@Summary(data.Summary)
+	}
+}
+
+// Summary renders the live overview. Its root element carries the HTMX
+// attributes that poll GET /fragments/summary every 30 seconds and swap
+// themselves (outerHTML) with the fresh fragment, so the same handler serves
+// both the initial embed and each refresh.
+templ Summary(data SummaryData) {
+	<section id="summary" class="card" hx-get="/fragments/summary" hx-trigger="every 30s" hx-swap="outerHTML">
+		<div class="summary-head">
+			<h2>Live overview</h2>
+			<button type="button" hx-get="/fragments/summary" hx-target="#summary" hx-swap="outerHTML">Refresh</button>
+		</div>
+		<div class="cards">
+			<div class="card metric">
+				<span class="metric-label">Agents</span>
+				<span class="metric-value">{ data.AgentCount }</span>
+			</div>
+			<div class="card metric">
+				<span class="metric-label">Sessions</span>
+				<span class="metric-value">{ data.SessionCount }</span>
+			</div>
+			<div class="card metric">
+				<span class="metric-label">Spend</span>
+				<span class="metric-value">{ data.SpendTotal }</span>
+			</div>
+		</div>
+		<h2>Agents</h2>
+		if data.AgentsError != "" {
+			<p class="error" role="alert">{ data.AgentsError }</p>
+		} else if len(data.Agents) == 0 {
+			<p class="muted">No agents.</p>
+		} else {
+			<table>
+				<thead>
+					<tr><th>Name</th><th>Latest</th><th>Description</th></tr>
+				</thead>
+				<tbody>
+					for _, a := range data.Agents {
+						<tr>
+							<td>{ a.Name }</td>
+							<td class="num">{ a.Version }</td>
+							<td>{ a.Description }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		}
+		<h2>Sessions</h2>
+		if data.SessionsError != "" {
+			<p class="error" role="alert">{ data.SessionsError }</p>
+		} else if len(data.Sessions) == 0 {
+			<p class="muted">No sessions.</p>
+		} else {
+			<table>
+				<thead>
+					<tr><th>Session</th><th>Agent</th><th>Status</th><th>Created</th></tr>
+				</thead>
+				<tbody>
+					for _, s := range data.Sessions {
+						<tr>
+							<td>{ s.ID }</td>
+							<td>{ s.Agent }</td>
+							<td>{ s.Status }</td>
+							<td>{ s.Created }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		}
+		<h2>Spend { data.SpendWindow }</h2>
+		if data.SpendError != "" {
+			<p class="error" role="alert">{ data.SpendError }</p>
+		} else if len(data.Spend) == 0 {
+			<p class="muted">No spend in this window.</p>
+		} else {
+			<table>
+				<thead>
+					<tr><th>Key</th><th>Amount</th><th>Tokens</th></tr>
+				</thead>
+				<tbody>
+					for _, g := range data.Spend {
+						<tr>
+							<td>{ g.Key }</td>
+							<td class="num">{ g.Amount }</td>
+							<td class="num">{ g.Tokens }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		}
+	</section>
+}
