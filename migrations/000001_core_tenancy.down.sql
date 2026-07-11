@@ -1,0 +1,6 @@
+BEGIN;
+
+DROP TABLE IF EXISTS environments;
+DROP TABLE IF EXISTS organizations;
+
+COMMIT;

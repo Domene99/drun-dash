@@ -1,0 +1,13 @@
+BEGIN;
+
+DROP TABLE IF EXISTS entitlements;
+DROP TABLE IF EXISTS agent_versions;
+DROP TABLE IF EXISTS agents;
+DROP TABLE IF EXISTS budget_rules;
+DROP TABLE IF EXISTS budgets;
+DROP TYPE IF EXISTS budget_scope;
+DROP TYPE IF EXISTS budget_window;
+DROP TABLE IF EXISTS policy_versions;
+DROP TABLE IF EXISTS policies;
+
+COMMIT;
