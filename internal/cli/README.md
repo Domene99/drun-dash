@@ -22,6 +22,9 @@ lives here so tests exercise every subcommand in-process with buffers.
 | `whoami`            | real   | 0/1  | Reports the authenticated member via `GET /auth/whoami`, or "Not logged in". |
 | `agents list`       | real   | 0/1  | Lists catalog agents via `GET /agents`, with `--limit`/`--cursor` paging. |
 | `agents get <id>`   | real   | 0/1  | Shows one agent via `GET /agents/{agentId}`; a `404` is a clear not-found. |
+| `sessions list`     | real   | 0/1  | Lists governed sessions via `GET /sessions`, with `--limit`/`--cursor` paging. |
+| `sessions get <id>` | real   | 0/1  | Shows one session via `GET /sessions/{sessionId}`; a `404` is a clear not-found. |
+| `spend`             | real   | 0/1  | Queries `GET /analytics/spend` with `--from`/`--to`/`--group-by`; prints total + groups. |
 | `config` (`env`)    | real   | 0    | Loads `config.Load()` and prints the resolved runtime configuration. |
 | `version` / `--version` | real | 0 | Prints `Version`. |
 | `help` / `-h` / `--help` | real | 0 | Prints usage listing every subcommand. |
@@ -62,6 +65,35 @@ sending a request. Any other non-2xx response is surfaced via the flat `Error`
 envelope (`code` + `message`). `--server` overrides the base URL stored with the
 token, exactly as `whoami` does.
 
+## Sessions (`sessions`)
+
+Read-only access to governed agent sessions, using the same Bearer-token and
+`--server` mechanism as `agents`, against `openapi/v1.yaml`:
+
+- `sessions list [--limit N] [--cursor C]` — `GET /sessions` (`listSessions`).
+  Prints the returned `Session` items as an aligned table (session id, agent id,
+  status, fan-out ceiling, created-at). `--limit` / `--cursor` are passed through
+  as query params, and a `next_cursor` yields a "More available — re-run with
+  --cursor …" hint.
+- `sessions get <sessionId>` — `GET /sessions/{sessionId}` (`getSession`). Prints
+  the session detail; a `404` prints a clear not-found message and exits
+  non-zero.
+
+## Spend (`spend`)
+
+Read-only access to aggregated LLM spend, using the same Bearer-token and
+`--server` mechanism, against `openapi/v1.yaml`:
+
+- `spend [--from RFC3339] [--to RFC3339] [--group-by agent|policy|principal]` —
+  `GET /analytics/spend` (`querySpend`). Prints the query window and total, then
+  a per-group table (key, amount, tokens). `--from` / `--to` / `--group-by` are
+  passed through as query params, and a bad value (e.g. an unknown `group_by`)
+  surfaces the server's `400` flat `Error` (`code` + `message`).
+
+With no stored token, `sessions` and `spend` print "Not logged in." and exit
+non-zero without sending a request. Any other non-2xx response is surfaced via
+the flat `Error` envelope.
+
 ### Configuration
 
 | Setting | Flag | Env | Default |
@@ -71,17 +103,18 @@ token, exactly as `whoami` does.
 | Requested scopes | `--scope SCOPES` | — | (none) |
 | Token storage dir | — | `DRUN_DASH_CONFIG_DIR` | `os.UserConfigDir()/drun-dash` |
 
-`whoami` and `agents` accept `--server` to override the base URL stored with the
-token; otherwise they reuse the server `login` authenticated against.
+`whoami`, `agents`, `sessions`, and `spend` accept `--server` to override the
+base URL stored with the token; otherwise they reuse the server `login`
+authenticated against.
 
 ## Testing
 
 Commands are driven against an `httptest` mock of the control-plane endpoints —
 no real network. The device poll loop takes an injectable `clock` so `slow_down`
-and expiry are tested deterministically without real sleeps, and the `agents`
-commands assert the Bearer token, pagination pass-through, the not-found path,
-and the not-logged-in path. Token storage is redirected to a temp dir via
-`DRUN_DASH_CONFIG_DIR`.
+and expiry are tested deterministically without real sleeps, and the `agents`,
+`sessions`, and `spend` commands assert the Bearer token, query/pagination
+pass-through, the not-found and bad-request paths, and the not-logged-in path.
+Token storage is redirected to a temp dir via `DRUN_DASH_CONFIG_DIR`.
 
 ## Not implemented yet
 
