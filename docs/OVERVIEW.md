@@ -14,12 +14,19 @@ may use**, **how much it may spend**, and **what record it leaves behind**. The
 engine is never modified — integration is over the external `drun-mcp` endpoint
 only.
 
-Three server binaries and two CLIs cooperate around one PostgreSQL database and
-one Redis instance:
+Three hosted server binaries, a member-run local console, and two CLIs
+cooperate around one PostgreSQL database and one Redis instance:
 
 - **control-plane** — the system of record and the REST API.
 - **llm-proxy** — the credential-brokering, spend-metering data path.
 - **admin-ui** — the read-mostly operator console.
+- **member-console** — the member's own conversational console: a loopback web
+  app the org member runs on their **own workstation** to launch and drive a
+  governed agent against a local drun engine (the second frontend). Today it is a
+  device-flow-login + entitled-agent + launch/terminate **shell**; the
+  conversational run view is landing across later batches. See
+  [MEMBER_CONSOLE.md](./MEMBER_CONSOLE.md) and
+  [ADR-0004](./adr/0004-member-conversational-console-architecture.md).
 - **drun-dash** CLI — the developer's entry point.
 - **policyctl** — the operator's offline policy-signing tool.
 
