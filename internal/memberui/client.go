@@ -1,7 +1,11 @@
 // Package memberui implements the drun-dash member console: a small,
 // server-rendered HTTP app (Go + templ + HTMX) an organization member runs on
-// their own workstation to sign in, see the agents they are entitled to, and
-// launch or terminate a governed session.
+// their own workstation to sign in, see the agents they are entitled to, launch
+// or terminate a governed session, and drive a conversational run view where a
+// natural-language directive becomes governed agent actions — model calls
+// through the proxy, tool calls in the local drun sandbox, streamed live over
+// Server-Sent Events with structure-only trajectory sent to the control plane
+// (ADR-0004).
 //
 // The member console is a separate binary from the control plane and never
 // imports control-plane packages; it talks to the control plane over HTTP

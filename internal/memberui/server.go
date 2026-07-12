@@ -3,6 +3,7 @@ package memberui
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Domene99/drun-dash/internal/memberui/views"
+	"github.com/Domene99/drun-dash/pkg/drunmcp"
 )
 
 // sessionCookieName carries the control-plane session token. It is set HttpOnly
@@ -39,6 +41,11 @@ const defaultClientID = "drun-dash-member-console"
 // control plane's device-code TTL (RFC 8628; 10 minutes).
 const deviceLoginTTL = 10 * time.Minute
 
+// proxyRequestTimeout bounds each governed model call the turn loop makes
+// through the proxy. Turns can take several model calls; the per-call bound
+// keeps a hung upstream from wedging a run without cutting healthy calls short.
+const proxyRequestTimeout = 2 * time.Minute
+
 // ctxKey is the private context-key type for values this package stashes on the
 // request context.
 type ctxKey int
@@ -47,7 +54,9 @@ const tokenCtxKey ctxKey = iota
 
 // launchedSession is the server-side record of a session this console launched.
 // It holds the secret proxy_token so it is never rendered to the page or
-// written to logs; only the non-secret fields reach the view.
+// written to logs; only the non-secret fields reach the view. The policy bundle
+// is held so the run view can verify it fail-closed and derive the tool set
+// before binding the drun engine (ADR-0004 §3).
 type launchedSession struct {
 	SessionID    string
 	AgentID      string
@@ -55,13 +64,15 @@ type launchedSession struct {
 	proxyToken   string
 	FanOut       int
 	ExpiresAt    string
+	policyBundle json.RawMessage
 }
 
 // Server is the member-console HTTP handler: a chi router serving the
 // device-flow login, the entitled-agent home page, session launch/terminate,
-// and a health check, backed by a control-plane [Client]. It holds the
-// proxy_token of each launched session in memory (never on the page). Construct
-// it with [New]; it implements [http.Handler].
+// the conversational run view (ADR-0004), and a health check, backed by a
+// control-plane [Client]. It holds the proxy_token of each launched session in
+// memory (never on the page) and, per active run, a bound local drun engine.
+// Construct it with [New]; it implements [http.Handler].
 type Server struct {
 	client       *Client
 	logger       *slog.Logger
@@ -69,8 +80,21 @@ type Server struct {
 	secureCookie bool
 	router       chi.Router
 
+	// Run-view configuration (ADR-0004). model is the id passed to the governed
+	// proxy; drunEndpoint locates the local drun engine; dial opens a drun
+	// client (swappable in tests); proxyHTTP calls the proxy; verify checks the
+	// policy bundle fail-closed; now/newEventID are injectable clocks/ids.
+	model        string
+	drunEndpoint string
+	dial         drunDialer
+	proxyHTTP    *http.Client
+	verify       bundleVerifier
+	now          func() time.Time
+	newEventID   func() string
+
 	mu       sync.Mutex
 	sessions map[string]*launchedSession
+	runs     map[string]*runState
 }
 
 // Option customizes a [Server].
@@ -93,6 +117,74 @@ func WithClientID(id string) Option {
 	}
 }
 
+// WithModel sets the model id the run loop passes to the governed proxy
+// (ADR-0004 §4). When empty, the run view withholds the chat and explains that
+// a model must be configured (MEMBER_CONSOLE_MODEL).
+func WithModel(model string) Option {
+	return func(s *Server) { s.model = strings.TrimSpace(model) }
+}
+
+// WithDrunEndpoint overrides the local drun engine endpoint. Defaults to
+// [drunmcp.DefaultEndpoint].
+func WithDrunEndpoint(endpoint string) Option {
+	return func(s *Server) {
+		if strings.TrimSpace(endpoint) != "" {
+			s.drunEndpoint = endpoint
+		}
+	}
+}
+
+// WithDrunDialer overrides how the console opens a drun client. Production uses
+// the default (a live *drunmcp.Client); tests inject a fake engine.
+func WithDrunDialer(dial drunDialer) Option {
+	return func(s *Server) {
+		if dial != nil {
+			s.dial = dial
+		}
+	}
+}
+
+// WithProxyHTTPClient overrides the HTTP client the turn loop uses for governed
+// proxy calls. Tests route it at a mock proxy.
+func WithProxyHTTPClient(hc *http.Client) Option {
+	return func(s *Server) {
+		if hc != nil {
+			s.proxyHTTP = hc
+		}
+	}
+}
+
+// WithBundleVerifier overrides the fail-closed policy-bundle check run before a
+// run binds its engine (ADR-0004 §3). Tests inject a permissive or failing
+// verifier; production uses [defaultBundleVerifier].
+func WithBundleVerifier(v bundleVerifier) Option {
+	return func(s *Server) {
+		if v != nil {
+			s.verify = v
+		}
+	}
+}
+
+// WithClock overrides the time source used for trajectory timestamps and bundle
+// freshness. Tests inject a fixed clock.
+func WithClock(now func() time.Time) Option {
+	return func(s *Server) {
+		if now != nil {
+			s.now = now
+		}
+	}
+}
+
+// WithEventIDFunc overrides the trajectory event-id generator. Tests inject a
+// deterministic sequence.
+func WithEventIDFunc(newID func() string) Option {
+	return func(s *Server) {
+		if newID != nil {
+			s.newEventID = newID
+		}
+	}
+}
+
 // New builds a Server that renders pages from live data fetched through client.
 // Pass nil for logger to use [slog.Default]. The returned Server is ready to
 // serve; its routes are wired once, here.
@@ -101,10 +193,17 @@ func New(client *Client, logger *slog.Logger, opts ...Option) *Server {
 		logger = slog.Default()
 	}
 	s := &Server{
-		client:   client,
-		logger:   logger,
-		clientID: defaultClientID,
-		sessions: make(map[string]*launchedSession),
+		client:       client,
+		logger:       logger,
+		clientID:     defaultClientID,
+		drunEndpoint: drunmcp.DefaultEndpoint,
+		dial:         defaultDrunDialer,
+		proxyHTTP:    &http.Client{Timeout: proxyRequestTimeout},
+		verify:       defaultBundleVerifier,
+		now:          time.Now,
+		newEventID:   randomEventID,
+		sessions:     make(map[string]*launchedSession),
+		runs:         make(map[string]*runState),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -119,8 +218,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // routes builds the chi router. Health and the login endpoints are public; the
-// home page and the session actions sit behind requireAuth, which redirects to
-// /login when the session cookie is absent.
+// home page, the session actions, and the run view sit behind requireAuth,
+// which redirects to /login when the session cookie is absent.
 func (s *Server) routes() chi.Router {
 	r := chi.NewRouter()
 
@@ -134,6 +233,9 @@ func (s *Server) routes() chi.Router {
 		r.Get("/", s.handleHome)
 		r.Post("/sessions", s.handleLaunch)
 		r.Post("/sessions/{sessionId}/terminate", s.handleTerminate)
+		r.Get("/sessions/{sessionId}", s.handleRunView)
+		r.Post("/sessions/{sessionId}/turn", s.handleTurn)
+		r.Get("/sessions/{sessionId}/stream", s.handleStream)
 	})
 
 	return r
@@ -257,9 +359,10 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleLaunch launches the chosen agent's governed session, records it (with
-// its secret proxy_token) server-side, and re-renders just the sessions section
-// for HTMX to swap in place. A rejected token asks HTMX to redirect to /login;
-// any other control-plane error is surfaced inside the section.
+// its secret proxy_token and policy bundle) server-side, and re-renders just the
+// sessions section for HTMX to swap in place. A rejected token asks HTMX to
+// redirect to /login; any other control-plane error is surfaced inside the
+// section.
 func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 
@@ -300,15 +403,17 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		proxyToken:   launch.ProxyToken,
 		FanOut:       launch.FanOutCeiling,
 		ExpiresAt:    launch.ExpiresAt,
+		policyBundle: launch.PolicyBundle,
 	})
 
 	s.render(w, r, http.StatusOK, views.SessionsSection(views.SessionsData{Sessions: s.sessionRows()}))
 }
 
-// handleTerminate terminates a launched session, drops its server-side record
-// (and its proxy_token), and re-renders the sessions section. A rejected token
-// asks HTMX to redirect to /login; any other control-plane error is surfaced
-// inside the section (the record is kept so the member can retry).
+// handleTerminate terminates a launched session, closes its bound drun session,
+// drops its server-side record (and its proxy_token), and re-renders the
+// sessions section. A rejected token asks HTMX to redirect to /login; any other
+// control-plane error is surfaced inside the section (the record is kept so the
+// member can retry).
 func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
@@ -327,6 +432,7 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.dropRun(sessionID)
 	s.dropSession(sessionID)
 	s.render(w, r, http.StatusOK, views.SessionsSection(views.SessionsData{Sessions: s.sessionRows()}))
 }
@@ -345,6 +451,28 @@ func (s *Server) dropSession(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionID)
+}
+
+// dropRun removes a run record and closes its bound drun session, freeing the
+// sandbox subprocess. It waits for any in-flight turn (which holds run.mu) to
+// finish before closing, so a terminate never yanks the engine mid-turn.
+func (s *Server) dropRun(sessionID string) {
+	s.mu.Lock()
+	run := s.runs[sessionID]
+	delete(s.runs, sessionID)
+	s.mu.Unlock()
+	if run == nil {
+		return
+	}
+	run.mu.Lock()
+	eng := run.engine
+	run.engine = nil
+	run.mu.Unlock()
+	if eng != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		eng.close(ctx)
+	}
 }
 
 // sessionRows snapshots the launched sessions as display rows, ordered by id
