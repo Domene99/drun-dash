@@ -50,7 +50,23 @@ type identityResponse struct {
 // identity-resolution failure — an invalid/expired ID token, an unknown or
 // cross-org subject, or an inactive member — is answered with a single generic
 // 401 so the endpoint reveals nothing about which orgs or members exist.
+//
+// OIDC is optional at boot (cmd/control-plane wires Deps.OIDC only when the IdP
+// is configured and reachable), so when it is nil this endpoint reports 501
+// instead of the rest of the API being unavailable.
 func (d Deps) exchangeOidcSession(w http.ResponseWriter, r *http.Request) {
+	// OIDC is optional: when the IdP is unconfigured or was unreachable during
+	// discovery at boot, Deps.OIDC is nil and this exchange cannot verify an ID
+	// token. The rest of the API stays mounted (it needs only the access-token
+	// Verifier), so the exchange degrades to 501 rather than panicking on a nil
+	// d.OIDC.Verify. Guarded before decoding the body so the disabled state is
+	// reported regardless of the request.
+	if d.OIDC == nil {
+		_ = httpx.WriteError(w, http.StatusNotImplemented, httpx.CodeNotImplemented,
+			"OIDC session exchange is not configured on this server")
+		return
+	}
+
 	var req oidcSessionExchangeRequest
 	if err := httpx.DecodeJSON(w, r, &req); err != nil {
 		_ = httpx.WriteError(w, http.StatusBadRequest, httpx.CodeBadRequest, err.Error())
