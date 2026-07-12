@@ -114,9 +114,26 @@ Wrappers with the exact argument names drun-mcp expects:
 | `SessionCommit` | `session_commit` |
 | `GetFetchAllowlist` | `get_fetch_allowlist` |
 | `SessionGetEnv` | `session_get_env` |
+| `SessionReadFile` | `session_read_file` |
+| `SessionWriteFile` | `session_write_file` |
+| `SessionCheckpoint` | `session_checkpoint_label` |
+| `SessionHistory` | `session_history` |
+| `SessionTree` | `session_tree` |
+| `SessionSnapshot` | `session_snapshot` |
 
 Checkpoints are addressed with `CheckpointRef` (`AtCheckpoint(id)` or
 `AtLabel(label)`); label takes precedence when both are set, matching drun-mcp.
+
+Two of the file/checkpoint helpers wrap the engine's real wire shape rather
+than a one-to-one tool name:
+
+- **`SessionCheckpoint`** wraps `session_checkpoint_label`. drun creates
+  checkpoints automatically on every write/bash call, so there is no explicit
+  "create checkpoint" tool; the timeline primitive is labeling the current
+  checkpoint (a non-empty label sets it, an empty label clears it).
+- **`SessionTree`** wraps `session_tree`, which is a **global** checkpoint tree
+  and takes no arguments. `sessionID` is accepted for symmetry with the other
+  helpers but is not sent on the wire.
 
 ## Testing
 
