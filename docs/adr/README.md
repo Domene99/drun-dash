@@ -27,3 +27,4 @@ time, so that later work streams stay consistent without re-litigating it.
 | [0001](0001-authentication-and-session-model.md) | Authentication and session model | Proposed |
 | [0002](0002-rest-api-conventions.md) | REST API conventions (org scoping, error mapping, pagination, DTO mapping) | Proposed |
 | [0003](0003-session-launch-and-credential-grant.md) | Session launch and scoped credential-grant model | Proposed |
+| [0004](0004-member-conversational-console-architecture.md) | Member conversational console architecture | Proposed |
