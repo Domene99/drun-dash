@@ -1,0 +1,56 @@
+package views
+
+// DeviceData is the view model for the CLI device-approval page. UserCode is
+// the short code the operator confirms against the one shown in their terminal.
+// Error, when non-empty, explains why the request cannot proceed. Done marks a
+// completed decision; Approved distinguishes an approval from a denial in the
+// confirmation.
+type DeviceData struct {
+	// UserCode is the device user code being confirmed.
+	UserCode string
+	// Error is shown as an alert when non-empty.
+	Error string
+	// Done reports that the decision has been recorded (renders the confirmation
+	// instead of the approve/deny form).
+	Done bool
+	// Approved is the recorded decision when Done; false means denied.
+	Approved bool
+}
+
+// Device renders the device-approval confirmation page that completes the CLI
+// `drun-dash login` device flow. It shows the user code so the operator can
+// confirm it matches their terminal, then approve or deny. Once a decision is
+// recorded it renders a short confirmation. The page is served only to a
+// signed-in member.
+templ Device(data DeviceData) {
+	@Layout("Approve device") {
+		<section class="card">
+			<h1>Approve device login</h1>
+			if data.Error != "" {
+				<p class="error" role="alert">{ data.Error }</p>
+			}
+			if data.Done {
+				if data.Approved {
+					<p>
+						Device <code>{ data.UserCode }</code> approved. You can return to
+						your terminal — the CLI will finish signing in.
+					</p>
+				} else {
+					<p>Device request <code>{ data.UserCode }</code> denied.</p>
+				}
+			} else if data.UserCode != "" {
+				<p class="muted">
+					A device is requesting access to your organization. Confirm that the
+					code below matches the one shown in your terminal, then approve or
+					deny the request.
+				</p>
+				<p class="metric-value">{ data.UserCode }</p>
+				<form method="post" action="/device" class="row-actions">
+					<input type="hidden" name="user_code" value={ data.UserCode }/>
+					<button type="submit" name="decision" value="approve">Approve</button>
+					<button type="submit" name="decision" value="deny" class="deny">Deny</button>
+				</form>
+			}
+		</section>
+	}
+}
