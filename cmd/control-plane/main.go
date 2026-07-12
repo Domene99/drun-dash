@@ -131,16 +131,20 @@ func run() error {
 
 // buildAuthDeps assembles the authentication stack from the environment: the
 // session-token issuer and verifier (sharing one Ed25519 key), the Redis-backed
-// revoker, the member store, and the OIDC verifier for the session exchange. It
-// also carries the shared database pool so the resource handlers can build
-// their own stores (store.NewAgentStore(d.Pool), …) without this function
-// growing a field per resource, and the session-launch material (bundle-signing
-// key, proxy URL, session TTL).
+// revoker, the member store, and — when configured — the OIDC verifier for the
+// session exchange. It also carries the shared database pool so the resource
+// handlers can build their own stores (store.NewAgentStore(d.Pool), …) without
+// this function growing a field per resource, and the session-launch material
+// (bundle-signing key, proxy URL, session TTL).
 //
-// The OIDC verifier requires live discovery against the org's IdP, so it is
-// built only when CP_OIDC_ISSUER and CP_OIDC_CLIENT_ID are both set. When they
-// are not, auth is not wired (a warning is logged) and the server still serves
-// health checks — this keeps a bare local `go run` working without an IdP.
+// It always returns a valid *[httpapi.Deps]: the whole REST API and device flow
+// depend only on the always-built Verifier, so the API must mount regardless of
+// OIDC. Only the session exchange (POST /auth/session) needs a live OIDC
+// verifier, so OIDC is optional: when CP_OIDC_ISSUER / CP_OIDC_CLIENT_ID are
+// unset — or set but the issuer is unreachable during discovery — Deps.OIDC is
+// left nil (a warning is logged) and only /auth/session degrades (to 501); the
+// boot never fails and every other route stays mounted. A missing seed or an
+// otherwise malformed configuration is still a hard error.
 func buildAuthDeps(ctx context.Context, logger *slog.Logger, pool *db.Pool, redisClient *redis.Client) (*httpapi.Deps, error) {
 	issuerName := getEnv(envJWTIssuer, defaultJWTIssuer)
 	audience := getEnv(envJWTAudience, defaultJWTAudience)
@@ -203,24 +207,19 @@ func buildAuthDeps(ctx context.Context, logger *slog.Logger, pool *db.Pool, redi
 		sessionTTL = parsed
 	}
 
-	oidcIssuer := os.Getenv(envOIDCIssuer)
-	oidcClientID := os.Getenv(envOIDCClientID)
-	if oidcIssuer == "" || oidcClientID == "" {
-		logger.Warn("OIDC not configured; auth routes disabled",
-			slog.String("hint", fmt.Sprintf("set %s and %s to enable /auth/session and /auth/whoami", envOIDCIssuer, envOIDCClientID)))
-		return nil, nil
-	}
-	oidcVerifier, err := oidc.NewRemoteVerifier(ctx, oidcIssuer, oidcClientID)
-	if err != nil {
-		return nil, fmt.Errorf("control-plane: build oidc verifier: %w", err)
-	}
+	// OIDC is optional and never gates the boot. A live verifier is only needed
+	// by POST /auth/session; the rest of the API (token verification via the
+	// always-built Verifier, /auth/whoami, every resource route, and the device
+	// flow) works without it. So an unset or unreachable IdP leaves OIDC nil and
+	// degrades only the session exchange (guarded to 501 in the handler).
+	oidcVerifier := buildOIDCVerifier(ctx, logger)
 
 	logger.Info("auth configured",
 		slog.String("issuer", issuerName),
 		slog.String("audience", audience),
 		slog.String("kid", kid),
 		slog.Duration("access_token_ttl", ttl),
-		slog.String("oidc_issuer", oidcIssuer),
+		slog.Bool("oidc_enabled", oidcVerifier != nil),
 		slog.String("bundle_kid", bundleKID),
 		slog.String("proxy_base_url", proxyBaseURL),
 		slog.String("admin_ui_base_url", adminUIBaseURL),
@@ -241,6 +240,37 @@ func buildAuthDeps(ctx context.Context, logger *slog.Logger, pool *db.Pool, redi
 		ProxyBaseURL:     proxyBaseURL,
 		SessionTTL:       sessionTTL,
 	}, nil
+}
+
+// buildOIDCVerifier constructs the OIDC verifier for the session exchange, or
+// returns nil when OIDC is not usable. It never fails the caller: OIDC is
+// optional (only POST /auth/session needs it), so both an unset configuration
+// and a failed discovery against the IdP degrade to a nil verifier (logged as a
+// warning) rather than an error. A nil return leaves Deps.OIDC nil, which the
+// exchange handler answers with 501; every other route is unaffected.
+//
+// The concrete verifier is returned through the oidc.Verifier interface so an
+// unusable OIDC yields a genuinely nil interface value (Deps.OIDC == nil).
+func buildOIDCVerifier(ctx context.Context, logger *slog.Logger) oidc.Verifier {
+	issuer := os.Getenv(envOIDCIssuer)
+	clientID := os.Getenv(envOIDCClientID)
+	if issuer == "" || clientID == "" {
+		logger.Warn("OIDC not configured; POST /auth/session will return 501 (the rest of the API is unaffected)",
+			slog.String("hint", fmt.Sprintf("set %s and %s to enable the OIDC session exchange", envOIDCIssuer, envOIDCClientID)))
+		return nil
+	}
+
+	verifier, err := oidc.NewRemoteVerifier(ctx, issuer, clientID)
+	if err != nil {
+		// Discovery against the IdP failed (e.g. an unreachable issuer). Log and
+		// continue with OIDC disabled rather than crashing the boot: the API
+		// must stay up, and /auth/session degrades to 501 until the IdP is
+		// reachable and the process is restarted.
+		logger.Warn("OIDC verifier build failed; POST /auth/session will return 501 (the rest of the API is unaffected)",
+			slog.String("oidc_issuer", issuer), slog.Any("error", err))
+		return nil
+	}
+	return verifier
 }
 
 // signingKeyFromEnv builds the Ed25519 signing key from CP_JWT_SIGNING_SEED (a
@@ -297,8 +327,10 @@ func getEnv(key, def string) string {
 
 // newRouter builds the HTTP router for the control-plane server, wrapping every
 // route in the shared middleware chain: request IDs, panic recovery, and
-// structured access logging. The readiness checkers back GET /readyz. When
-// authDeps is non-nil, the auth routes are mounted via httpapi.Mount.
+// structured access logging. The readiness checkers back GET /readyz. The full
+// REST API and device flow are always mounted via httpapi.Mount — they depend
+// only on the always-built auth stack, not on OIDC — so the API is served even
+// when OIDC is unconfigured (only the session exchange degrades to 501).
 func newRouter(logger *slog.Logger, authDeps *httpapi.Deps, checkers ...health.Named) http.Handler {
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID, httpx.Recoverer(logger), httpx.Logger(logger))
@@ -306,9 +338,7 @@ func newRouter(logger *slog.Logger, authDeps *httpapi.Deps, checkers ...health.N
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", health.Handler(checkers...))
 
-	if authDeps != nil {
-		httpapi.Mount(r, *authDeps)
-	}
+	httpapi.Mount(r, *authDeps)
 	return r
 }
 

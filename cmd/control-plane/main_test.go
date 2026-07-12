@@ -11,15 +11,19 @@ import (
 	"testing"
 
 	"github.com/Domene99/drun-dash/internal/health"
+	"github.com/Domene99/drun-dash/internal/httpapi"
 )
 
 // testRouter builds the router with a logger that discards output so tests do
 // not spam stdout, plus any readiness checkers the test wants wired into
-// /readyz. Auth is not wired here; the auth vertical is covered end-to-end in
-// internal/httpapi.
+// /readyz. The REST API is always mounted (newRouter no longer gates on OIDC),
+// so a zero-value Deps is passed: these tests exercise only the health and
+// middleware routes, which sit outside the authenticated group. The auth
+// vertical is covered end-to-end in internal/httpapi and the OIDC-unset boot
+// wiring in boot_test.go.
 func testRouter(checkers ...health.Named) http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return newRouter(logger, nil, checkers...)
+	return newRouter(logger, &httpapi.Deps{}, checkers...)
 }
 
 func TestHealthz(t *testing.T) {

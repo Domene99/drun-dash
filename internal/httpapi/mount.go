@@ -38,7 +38,10 @@ type MemberReader interface {
 // scoping a grant need process-wide material (a key, the proxy URL, the session
 // lifetime) that is not derivable from the request, so they are wired once here.
 type Deps struct {
-	// OIDC verifies the IdP-issued ID token presented to POST /auth/session.
+	// OIDC verifies the IdP-issued ID token presented to POST /auth/session. It
+	// is optional: cmd/control-plane leaves it nil when the IdP is unconfigured
+	// or was unreachable at boot, in which case exchangeOidcSession returns 501
+	// and the rest of the API is unaffected (it needs only the Verifier).
 	OIDC oidc.Verifier
 	// Issuer mints the control-plane access token returned by /auth/session.
 	Issuer *auth.Issuer
@@ -93,10 +96,14 @@ type Deps struct {
 // This is the single seam the binary calls to expose the API surface: the
 // authentication vertical (POST /auth/session, GET /auth/whoami) plus the
 // resource handlers. Adding a resource is one line in the protected group here.
+// The whole surface is always mounted — it depends only on the always-built
+// auth stack, not on OIDC — so an unconfigured IdP degrades just the session
+// exchange (to 501), never the availability of the API.
 func Mount(r chi.Router, deps Deps) {
 	// POST /auth/session is unauthenticated by design: it is how a caller
 	// obtains a token in the first place (it authenticates via the OIDC ID
-	// token in the body, not a Bearer header).
+	// token in the body, not a Bearer header). When OIDC is not configured it
+	// returns 501; it stays mounted regardless.
 	r.Post("/auth/session", deps.exchangeOidcSession)
 
 	// The device-authorization flow's public endpoints (RFC 8628): the CLI has
@@ -115,6 +122,11 @@ func Mount(r chi.Router, deps Deps) {
 		// member approves or denies a pending CLI authorization from the
 		// browser session established by OIDC login. Not in openapi/v1.yaml.
 		pr.Post("/auth/device/approve", deps.approveDevice)
+
+		// GET /me/agents returns only the caller's entitled agents (the member
+		// console surface), distinct from GET /agents (all org agents). A
+		// documented contract extension, not in openapi/v1.yaml.
+		pr.Get("/me/agents", deps.listMyAgents)
 
 		pr.Get("/agents", deps.listAgents)
 		pr.Post("/agents", deps.createAgent)
