@@ -160,3 +160,85 @@ func (c *Client) SessionGetEnv(ctx context.Context, sessionID, name string) (str
 	}
 	return res.Text(), nil
 }
+
+// --- File, checkpoint, and history/tree helpers -------------------------------
+//
+// These wrap the drun-mcp file and checkpoint-timeline primitives the member
+// console (ADR-0004) needs for its file view, checkpoint timeline, and
+// diff-before-commit flow. They follow the same conventions as the helpers
+// above: a typed string return where there is one obvious value, otherwise the
+// raw *CallToolResult.
+
+// SessionReadFile returns the contents of the file at path in the session,
+// decoded to text. path is session-relative (e.g. "src/main.go"). For large
+// files the underlying tool supports offset/limit paging; this helper reads the
+// whole file — use CallTool directly if you need to page.
+func (c *Client) SessionReadFile(ctx context.Context, sessionID, path string) (string, error) {
+	res, err := ensureOK(c.CallTool(ctx, "session_read_file", map[string]any{
+		"session_id": sessionID,
+		"path":       path,
+	}))
+	if err != nil {
+		return "", err
+	}
+	return res.Text(), nil
+}
+
+// SessionWriteFile creates or overwrites the file at path with content,
+// producing a new checkpoint. path is session-relative. Returns the raw tool
+// result (checkpoint metadata in the payload).
+func (c *Client) SessionWriteFile(ctx context.Context, sessionID, path, content string) (*CallToolResult, error) {
+	return ensureOK(c.CallTool(ctx, "session_write_file", map[string]any{
+		"session_id": sessionID,
+		"path":       path,
+		"content":    content,
+	}))
+}
+
+// SessionCheckpoint marks the session's current checkpoint with a
+// human-readable label and returns the tool's payload as text.
+//
+// drun creates checkpoints automatically on every write/bash call, so there is
+// no explicit "create checkpoint" tool. The checkpoint primitive the console's
+// timeline needs is labeling milestones ("baseline", "before commit"), so this
+// wraps session_checkpoint_label to mark the current checkpoint. A non-empty
+// label sets it; an empty label clears it, matching drun semantics.
+func (c *Client) SessionCheckpoint(ctx context.Context, sessionID, label string) (string, error) {
+	res, err := ensureOK(c.CallTool(ctx, "session_checkpoint_label", map[string]any{
+		"session_id": sessionID,
+		"label":      label,
+	}))
+	if err != nil {
+		return "", err
+	}
+	return res.Text(), nil
+}
+
+// SessionHistory returns the raw result of session_history: every checkpoint in
+// the session with its stdout/stderr byte counts and the file delta relative to
+// the previous checkpoint. Use CallToolResult.Decode to unmarshal the timeline.
+func (c *Client) SessionHistory(ctx context.Context, sessionID string) (*CallToolResult, error) {
+	return ensureOK(c.CallTool(ctx, "session_history", map[string]any{
+		"session_id": sessionID,
+	}))
+}
+
+// SessionTree returns the raw result of session_tree: the full checkpoint tree
+// across all sessions, with forks nested under the checkpoint they branched
+// from and the active head of each session flagged.
+//
+// session_tree is a global view and takes no arguments; sessionID is accepted
+// for symmetry with the other session helpers but is intentionally not sent.
+func (c *Client) SessionTree(ctx context.Context, sessionID string) (*CallToolResult, error) {
+	return ensureOK(c.CallTool(ctx, "session_tree", map[string]any{}))
+}
+
+// SessionSnapshot serializes the session's full checkpoint history to a .drun
+// file on the host and returns the raw result. The written path is in the
+// payload (use CallToolResult.Text or Decode to read it); reload it with the
+// engine's session_restore tool.
+func (c *Client) SessionSnapshot(ctx context.Context, sessionID string) (*CallToolResult, error) {
+	return ensureOK(c.CallTool(ctx, "session_snapshot", map[string]any{
+		"session_id": sessionID,
+	}))
+}

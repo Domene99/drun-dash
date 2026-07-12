@@ -443,4 +443,140 @@ func TestToolErrorSurfacedAsError(t *testing.T) {
 	}
 }
 
+// --- File, checkpoint, and history/tree helper encoding -----------------------
+
+func TestSessionReadFileEncoding(t *testing.T) {
+	url, captured := newServer(t, func(w http.ResponseWriter, req jsonRPCRequest) {
+		writeJSONResult(w, req.ID, `{"content":[{"type":"text","text":"package main\n"}]}`)
+	})
+
+	got, err := NewClient(url).SessionReadFile(context.Background(), "s1", "main.go")
+	if err != nil {
+		t.Fatalf("SessionReadFile: %v", err)
+	}
+	if got != "package main\n" {
+		t.Errorf("content = %q, want %q", got, "package main\n")
+	}
+	name, args := toolCall(t, (*captured)[0].req)
+	if name != "session_read_file" {
+		t.Errorf("tool name = %q, want session_read_file", name)
+	}
+	if len(args) != 2 || args["session_id"] != "s1" || args["path"] != "main.go" {
+		t.Errorf("args = %v, want session_id=s1 path=main.go", args)
+	}
+}
+
+func TestSessionReadFileToolError(t *testing.T) {
+	url, _ := newServer(t, func(w http.ResponseWriter, req jsonRPCRequest) {
+		writeJSONResult(w, req.ID, `{"isError":true,"content":[{"type":"text","text":"no such file"}]}`)
+	})
+
+	_, err := NewClient(url).SessionReadFile(context.Background(), "s1", "missing")
+	if err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Errorf("expected tool error surfaced, got %v", err)
+	}
+}
+
+func TestSessionWriteFileEncoding(t *testing.T) {
+	url, captured := newServer(t, func(w http.ResponseWriter, req jsonRPCRequest) {
+		writeJSONResult(w, req.ID, `{"content":[{"type":"text","text":"{\"checkpoint_id\":2}"}]}`)
+	})
+
+	if _, err := NewClient(url).SessionWriteFile(context.Background(), "s1", "a/b.txt", "hello"); err != nil {
+		t.Fatalf("SessionWriteFile: %v", err)
+	}
+	name, args := toolCall(t, (*captured)[0].req)
+	if name != "session_write_file" {
+		t.Errorf("tool name = %q, want session_write_file", name)
+	}
+	if len(args) != 3 || args["session_id"] != "s1" || args["path"] != "a/b.txt" || args["content"] != "hello" {
+		t.Errorf("args = %v, want session_id=s1 path=a/b.txt content=hello", args)
+	}
+}
+
+func TestSessionCheckpointEncoding(t *testing.T) {
+	url, captured := newServer(t, func(w http.ResponseWriter, req jsonRPCRequest) {
+		writeJSONResult(w, req.ID, `{"content":[{"type":"text","text":"{\"checkpoint_id\":7,\"label\":\"baseline\"}"}]}`)
+	})
+
+	got, err := NewClient(url).SessionCheckpoint(context.Background(), "s1", "baseline")
+	if err != nil {
+		t.Fatalf("SessionCheckpoint: %v", err)
+	}
+	if !strings.Contains(got, "baseline") {
+		t.Errorf("payload = %q, want to contain baseline", got)
+	}
+	name, args := toolCall(t, (*captured)[0].req)
+	if name != "session_checkpoint_label" {
+		t.Errorf("tool name = %q, want session_checkpoint_label", name)
+	}
+	if args["session_id"] != "s1" || args["label"] != "baseline" {
+		t.Errorf("args = %v, want session_id=s1 label=baseline", args)
+	}
+	// The current checkpoint is labeled, so no checkpoint_id is sent.
+	if _, hasCP := args["checkpoint_id"]; hasCP {
+		t.Errorf("checkpoint_id should be omitted (labels the current checkpoint): %v", args)
+	}
+}
+
+func TestSessionHistoryEncoding(t *testing.T) {
+	url, captured := newServer(t, func(w http.ResponseWriter, req jsonRPCRequest) {
+		writeJSONResult(w, req.ID, `{"content":[{"type":"text","text":"{\"checkpoints\":[]}"}]}`)
+	})
+
+	if _, err := NewClient(url).SessionHistory(context.Background(), "s1"); err != nil {
+		t.Fatalf("SessionHistory: %v", err)
+	}
+	name, args := toolCall(t, (*captured)[0].req)
+	if name != "session_history" {
+		t.Errorf("tool name = %q, want session_history", name)
+	}
+	if len(args) != 1 || args["session_id"] != "s1" {
+		t.Errorf("args = %v, want only session_id=s1", args)
+	}
+}
+
+func TestSessionTreeEncoding(t *testing.T) {
+	url, captured := newServer(t, func(w http.ResponseWriter, req jsonRPCRequest) {
+		writeJSONResult(w, req.ID, `{"content":[{"type":"text","text":"{\"sessions\":[]}"}]}`)
+	})
+
+	if _, err := NewClient(url).SessionTree(context.Background(), "s1"); err != nil {
+		t.Fatalf("SessionTree: %v", err)
+	}
+	name, args := toolCall(t, (*captured)[0].req)
+	if name != "session_tree" {
+		t.Errorf("tool name = %q, want session_tree", name)
+	}
+	// session_tree is a global view: it takes no arguments. In particular the
+	// sessionID accepted for API symmetry must not be forwarded.
+	if _, has := args["session_id"]; has {
+		t.Errorf("session_tree must not send session_id: %v", args)
+	}
+	if len(args) != 0 {
+		t.Errorf("session_tree must send no arguments, got %v", args)
+	}
+}
+
+func TestSessionSnapshotEncoding(t *testing.T) {
+	url, captured := newServer(t, func(w http.ResponseWriter, req jsonRPCRequest) {
+		writeJSONResult(w, req.ID, `{"content":[{"type":"text","text":"{\"path\":\"/tmp/s1.drun\"}"}]}`)
+	})
+
+	res, err := NewClient(url).SessionSnapshot(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("SessionSnapshot: %v", err)
+	}
+	if !strings.Contains(res.Text(), ".drun") {
+		t.Errorf("snapshot payload = %q, want to contain .drun", res.Text())
+	}
+	name, args := toolCall(t, (*captured)[0].req)
+	if name != "session_snapshot" {
+		t.Errorf("tool name = %q, want session_snapshot", name)
+	}
+	if len(args) != 1 || args["session_id"] != "s1" {
+		t.Errorf("args = %v, want only session_id=s1", args)
+	}
+}
+
 func intPtr(i int) *int { return &i }
