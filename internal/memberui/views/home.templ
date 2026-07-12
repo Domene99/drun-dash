@@ -1,0 +1,89 @@
+package views
+
+// Home renders the authenticated landing page: the agents the member is
+// entitled to launch (each with a Launch action) and, via [SessionsSection],
+// the sessions this console has launched.
+templ Home(data HomeData) {
+	@Layout("Home", true) {
+		<section class="card">
+			<h1>Agents you can launch</h1>
+			if data.AgentsError != "" {
+				<p class="error" role="alert">{ data.AgentsError }</p>
+			} else if len(data.Agents) == 0 {
+				<p class="muted">No agents are available to you yet.</p>
+			} else {
+				<table>
+					<thead>
+						<tr>
+							<th>Agent</th>
+							<th class="num">Version</th>
+							<th>Description</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, a := range data.Agents {
+							<tr>
+								<td>{ a.Name }</td>
+								<td class="num">{ a.Version }</td>
+								<td>{ a.Description }</td>
+								<td>
+									<form hx-post="/sessions" hx-target="#sessions" hx-swap="outerHTML">
+										<input type="hidden" name="agent_id" value={ a.ID }/>
+										<button type="submit" class="primary">Launch</button>
+									</form>
+								</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</section>
+		@SessionsSection(SessionsData{Sessions: data.Sessions})
+	}
+}
+
+// SessionsSection renders the launched-sessions table. It is a standalone
+// component with a stable id so the launch and terminate actions can swap just
+// this section via HTMX. The proxy token is never shown: only the session id,
+// agent, proxy base URL, fan-out ceiling, and expiry.
+templ SessionsSection(data SessionsData) {
+	<section class="card" id="sessions">
+		<h2>Your sessions</h2>
+		if data.Error != "" {
+			<p class="error" role="alert">{ data.Error }</p>
+		}
+		if len(data.Sessions) == 0 {
+			<p class="muted">No active sessions. Launch an agent above to start one.</p>
+		} else {
+			<table>
+				<thead>
+					<tr>
+						<th>Session</th>
+						<th>Agent</th>
+						<th>Proxy base URL</th>
+						<th class="num">Fan-out</th>
+						<th>Expires</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, s := range data.Sessions {
+						<tr>
+							<td class="mono">{ s.ID }</td>
+							<td>{ s.Agent }</td>
+							<td class="mono">{ s.ProxyBaseURL }</td>
+							<td class="num">{ s.FanOut }</td>
+							<td>{ s.Expires }</td>
+							<td>
+								<form hx-post={ terminatePath(s.ID) } hx-target="#sessions" hx-swap="outerHTML">
+									<button type="submit" class="deny">Terminate</button>
+								</form>
+							</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		}
+	</section>
+}
