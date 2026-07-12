@@ -11,9 +11,13 @@ probes, the authentication vertical, and graceful shutdown.
 | GET    | `/readyz`       | none        | Readiness. `200` when the database ping succeeds.        |
 | POST   | `/auth/session` | OIDC token  | Exchange a verified OIDC ID token for a control-plane JWT. |
 | GET    | `/auth/whoami`  | Bearer JWT  | Describe the authenticated principal.                    |
+| POST   | `/auth/device/code`  | none        | Start the CLI device-authorization flow (RFC 8628).      |
+| POST   | `/auth/device/token` | none        | Poll for the session token; RFC 8628 `OAuthError` codes. |
+| POST   | `/auth/device/approve` | Bearer JWT | Admin-UI approval of a pending device request (extension). |
 
-`/auth/session` and `/auth/whoami` are only mounted when OIDC is configured (see
-below); otherwise the server logs a warning and serves the health probes only.
+The `/auth/*` routes (session exchange, whoami, and the device-flow endpoints)
+are only mounted when OIDC is configured (see below); otherwise the server logs
+a warning and serves the health probes only.
 
 ## Configuration
 
@@ -33,6 +37,7 @@ control-plane wiring (`internal/config` is intentionally not extended for them):
 | `CP_JWT_SIGNING_SEED`  | _(ephemeral)_   | Base64 of a 32-byte Ed25519 seed. Unset ⇒ a random per-process key. |
 | `CP_OIDC_ISSUER`       | _(unset)_       | Org IdP issuer URL. Required to enable the auth routes.            |
 | `CP_OIDC_CLIENT_ID`    | _(unset)_       | Org OAuth client id, checked as the ID token `aud`.               |
+| `CP_ADMIN_UI_BASE_URL` | `http://localhost:8080` | Admin UI origin; the device-flow `verification_uri` is `<base>/device`. |
 
 Notes:
 

@@ -47,6 +47,13 @@ type Deps struct {
 	Verifier *auth.Verifier
 	// Members resolves the local member a verified OIDC subject maps to.
 	Members MemberReader
+	// Redis backs the device-authorization flow state (ADR-0001 §2): the
+	// pending-authorization records keyed by device_code hash and user_code.
+	// Only the device handlers use it; tests inject an in-memory DeviceStore.
+	Redis DeviceStore
+	// AdminUIBaseURL is the admin UI origin used to build the device-flow
+	// verification_uri (<AdminUIBaseURL>/device) the CLI shows the user.
+	AdminUIBaseURL string
 	// Pool is the shared database pool the resource handlers build their
 	// stores over (store.NewAgentStore(d.Pool), …). It is set once by
 	// cmd/control-plane so new resources need not touch this struct or the
@@ -92,11 +99,22 @@ func Mount(r chi.Router, deps Deps) {
 	// token in the body, not a Bearer header).
 	r.Post("/auth/session", deps.exchangeOidcSession)
 
+	// The device-authorization flow's public endpoints (RFC 8628): the CLI has
+	// no Bearer token yet, so both the code request and the token poll are
+	// unauthenticated. Approval (below) is the one step that requires a member.
+	r.Post("/auth/device/code", deps.startDeviceAuthorization)
+	r.Post("/auth/device/token", deps.pollDeviceToken)
+
 	// Everything below requires a valid access token. Grouping keeps the
 	// middleware scoped to protected routes without affecting the public ones.
 	r.Group(func(pr chi.Router) {
 		pr.Use(authmw.RequireAuth(deps.Verifier))
 		pr.Get("/auth/whoami", deps.getCurrentIdentity)
+
+		// Device-flow approval is the admin-UI→control-plane extension: the
+		// member approves or denies a pending CLI authorization from the
+		// browser session established by OIDC login. Not in openapi/v1.yaml.
+		pr.Post("/auth/device/approve", deps.approveDevice)
 
 		pr.Get("/agents", deps.listAgents)
 		pr.Post("/agents", deps.createAgent)

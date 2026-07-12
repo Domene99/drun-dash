@@ -115,3 +115,40 @@ Thin wrappers over `httpx.WriteJSON` for a uniform success path:
 | --- | --- |
 | `WriteOK(w, v)` | 200 JSON |
 | `WriteCreated(w, v)` | 201 JSON |
+
+## Device-authorization flow (`device.go`)
+
+The OAuth 2.0 device grant (RFC 8628) that lets the browserless `drun-dash`
+CLI obtain a session token, implementing [ADR-0001](../../docs/adr/0001-authentication-and-session-model.md)
+§2. State lives in Redis (`Deps.Redis`, a narrow `DeviceStore`) with a **600s**
+TTL, so pending authorizations expire on their own with no reaper.
+
+| Endpoint | Auth | Behavior |
+| --- | --- | --- |
+| `POST /auth/device/code` | none | Mint an opaque `device_code` (32 `crypto/rand` bytes, base64url) and a short `user_code` (`XXXX-XXXX`, ambiguity-free alphabet). Store both keys, return `verification_uri` = `<AdminUIBaseURL>/device`, `verification_uri_complete`, `expires_in`, `interval`. |
+| `POST /auth/device/token` | none | Poll with the `device_code`. Returns the RFC 8628 `OAuthError` codes (`authorization_pending`, `slow_down`, `access_denied`, `expired_token`) as `400`s; on `approved`, mints the session JWT, deletes both keys (single-use), and returns `200` `TokenResponse`. |
+| `POST /auth/device/approve` | Bearer | **Extension, not in `openapi/v1.yaml`.** The admin UI (behind OIDC login) calls this to approve/deny a pending request; the approving member's principal is bound onto the record. |
+
+Redis key layout (`device_code` is never stored raw):
+
+- `authz:device:<sha256hex(device_code)>` → JSON record
+  `{state, user_code, client_id, scope, last_poll_unix, interval, sub, member_id, org_id, roles}`.
+- `authz:user_code:<user_code>` → `device_code` (the browser approval lookup).
+
+Both keys share the 600s TTL; re-stores (slow_down bookkeeping, approval) preserve
+the record's **remaining** TTL rather than resetting it.
+
+### `POST /auth/device/approve` (the extension)
+
+Body `{user_code, decision}` where `decision` is `"approve"` or `"deny"`. It
+resolves `authz:user_code:<user_code>` → `device_code` → record, then:
+
+- **approve** — sets `state="approved"` and binds `sub`/`member_id`/`org_id`/`roles`
+  from `authmw.MustPrincipal` (the OIDC-authenticated admin-UI session). `sub`
+  mirrors `members.idp_subject` so the CLI's minted token resolves the same
+  `Member` as `/auth/session`.
+- **deny** — sets `state="denied"`.
+
+An unknown or expired `user_code` is a **404**. It is deliberately outside the
+OpenAPI contract because it is an admin-UI→control-plane internal step, not part
+of the public CLI-facing surface.
