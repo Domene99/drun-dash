@@ -23,6 +23,12 @@
 //   - MEMBER_CONSOLE_CLIENT_ID    device-flow client_id (default drun-dash-member-console)
 //   - MEMBER_CONSOLE_MODEL        model id passed to the governed proxy (required for runs)
 //   - DRUN_MCP_ENDPOINT           local drun engine endpoint (default drunmcp.DefaultEndpoint)
+//   - MEMBER_CONSOLE_APPROVAL_TIMEOUT        how long a policy-blocked step waits
+//     for a decision before falling closed
+//     (Go duration; default 5m)
+//   - MEMBER_CONSOLE_APPROVAL_POLL_INTERVAL  how often to poll the escalation
+//     queue while waiting (Go duration;
+//     default 3s)
 package main
 
 import (
@@ -34,6 +40,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Domene99/drun-dash/internal/config"
 	"github.com/Domene99/drun-dash/internal/httpserver"
@@ -56,6 +63,8 @@ const (
 	envMemberConsoleClientID = "MEMBER_CONSOLE_CLIENT_ID"
 	envMemberConsoleModel    = "MEMBER_CONSOLE_MODEL"
 	envDrunMCPEndpoint       = "DRUN_MCP_ENDPOINT"
+	envApprovalTimeout       = "MEMBER_CONSOLE_APPROVAL_TIMEOUT"
+	envApprovalPollInterval  = "MEMBER_CONSOLE_APPROVAL_POLL_INTERVAL"
 
 	defaultMemberConsoleHTTPAddr = ":8083"
 	defaultControlPlaneBase      = "http://localhost:8080"
@@ -119,6 +128,16 @@ func run() error {
 	if clientID := os.Getenv(envMemberConsoleClientID); clientID != "" {
 		opts = append(opts, memberui.WithClientID(clientID))
 	}
+	if d, err := parseDurationEnv(envApprovalTimeout); err != nil {
+		return err
+	} else if d > 0 {
+		opts = append(opts, memberui.WithApprovalWaitTimeout(d))
+	}
+	if d, err := parseDurationEnv(envApprovalPollInterval); err != nil {
+		return err
+	} else if d > 0 {
+		opts = append(opts, memberui.WithApprovalPollInterval(d))
+	}
 
 	handler := memberui.New(client, logger, opts...)
 
@@ -134,6 +153,21 @@ func memberServerConfig(cfg *config.Config, addr string) *config.Config {
 	memberCfg := *cfg
 	memberCfg.HTTPAddr = addr
 	return &memberCfg
+}
+
+// parseDurationEnv reads an optional Go duration from the environment. An unset
+// or empty variable yields 0 (use the default); a malformed value is a fatal
+// misconfiguration surfaced at boot rather than silently ignored.
+func parseDurationEnv(key string) (time.Duration, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("member-console: %s=%q must be a Go duration: %w", key, v, err)
+	}
+	return d, nil
 }
 
 // getEnv returns the value of key, or def when the variable is unset or empty.

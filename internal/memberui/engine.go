@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Domene99/drun-dash/internal/agentrun"
@@ -25,6 +26,15 @@ type drunConn interface {
 	CreateSession(ctx context.Context) (string, error)
 	CallTool(ctx context.Context, name string, args any) (*drunmcp.CallToolResult, error)
 	SessionClose(ctx context.Context, sessionID string) error
+
+	// Console-driven checkpoint/diff/commit calls. These are member/console
+	// operations (the checkpoint timeline, diff-before-commit) rather than
+	// agent tool calls, so the console invokes them directly on the bound
+	// session — never through the model's tool set (ADR-0004 §3, design §6.3).
+	SessionHistory(ctx context.Context, sessionID string) (*drunmcp.CallToolResult, error)
+	SessionTree(ctx context.Context, sessionID string) (*drunmcp.CallToolResult, error)
+	SessionDiff(ctx context.Context, sessionID string, from, to drunmcp.CheckpointRef) (string, error)
+	SessionCommit(ctx context.Context, sessionID string, keys ...string) (*drunmcp.CallToolResult, error)
 }
 
 // drunDialer opens a [drunConn] at endpoint. The default dials a real
@@ -36,15 +46,24 @@ func defaultDrunDialer(endpoint string) drunConn {
 	return drunmcp.NewClient(endpoint, drunmcp.WithClientInfo("drun-dash-member-console", "0.1.0"))
 }
 
-// managementTools are drun lifecycle tools the console owns and therefore never
-// offers to the model: letting the model create, close, or restore sessions
-// would let it escape or tear down the session the console is governing. The
-// engine still enforces policy, but session lifecycle is a console concern, not
-// an agent action (ADR-0004 §3).
+// managementTools are drun tools the console owns and therefore never offers to
+// the model, for two reasons. First, session lifecycle (create/close/restore):
+// letting the model create, close, or restore sessions would let it escape or
+// tear down the session the console is governing. Second, and more importantly,
+// the host-boundary writes (commit/export/snapshot): committing sandbox changes
+// back to the member's host files must happen ONLY through the explicit
+// diff-before-commit member action, never as an autonomous agent step — that is
+// the core host-file-safety guarantee (design §6.3). The engine still enforces
+// policy at execution, but these operations are console concerns, not agent
+// actions (ADR-0004 §3).
 var managementTools = map[string]bool{
 	"create_session":  true,
 	"session_close":   true,
 	"session_restore": true,
+	// Host-boundary writes: reachable only via explicit member action.
+	"session_commit":   true,
+	"session_export":   true,
+	"session_snapshot": true,
 }
 
 // boundEngine is a live drun sandbox binding for one launched session: the
@@ -79,13 +98,18 @@ func bindEngine(ctx context.Context, dial drunDialer, endpoint string, bundle js
 		return nil, fmt.Errorf("memberui: list drun tools: %w", err)
 	}
 	allowed := parseAllowedTools(bundle)
-	specs, wantsSession := buildToolSet(listed.Tools, allowed)
+	specs, wantsSession, offered := buildToolSet(listed.Tools, allowed)
 	return &boundEngine{
-		conn:         conn,
-		sessionID:    sessionID,
-		endpoint:     endpoint,
-		tools:        specs,
-		executor:     &toolExecutor{conn: conn, sessionID: sessionID, wantsSession: wantsSession},
+		conn:      conn,
+		sessionID: sessionID,
+		endpoint:  endpoint,
+		tools:     specs,
+		executor: &toolExecutor{
+			conn:         conn,
+			sessionID:    sessionID,
+			offered:      offered,
+			wantsSession: wantsSession,
+		},
 		policyScoped: allowed != nil,
 	}, nil
 }
@@ -99,31 +123,40 @@ func (b *boundEngine) close(ctx context.Context) {
 	_ = b.conn.SessionClose(ctx, b.sessionID)
 }
 
-// buildToolSet turns discovered drun tools into the model's tool menu: it drops
-// the console-owned lifecycle tools and, when the bundle names an allowed_tools
-// list, keeps only the intersection (ADR-0004 §4). It returns the specs plus a
-// per-name record of which tools want the bound session_id injected at
-// execution — that map is also the authoritative "is this tool offered?" set the
-// executor blocks against. Specs are sorted by name for stable rendering.
-func buildToolSet(tools []drunmcp.Tool, allowed map[string]bool) (specs []agentrun.ToolSpec, wantsSession map[string]bool) {
+// buildToolSet turns discovered drun tools into the model's tool menu. It drops
+// the console-owned lifecycle/host-write tools entirely (they are never
+// executable, even on approval), and when the bundle names an allowed_tools list
+// it offers only the intersection to the model (ADR-0004 §4). It returns three
+// things: the offered specs (sorted for stable rendering); wantsSession, a
+// per-name record of which tools want the bound session_id injected — computed
+// for EVERY executable (non-management) discovered tool, not just the offered
+// ones, so an escalated-then-approved tool can be executed with the right args;
+// and offered, the set of tools actually presented to the model, which is the
+// authoritative "is this allowed without approval?" set the executor blocks
+// against.
+func buildToolSet(tools []drunmcp.Tool, allowed map[string]bool) (specs []agentrun.ToolSpec, wantsSession, offered map[string]bool) {
 	wantsSession = make(map[string]bool, len(tools))
+	offered = make(map[string]bool, len(tools))
 	for _, t := range tools {
 		if managementTools[t.Name] {
 			continue
 		}
+		params, ws := prepareToolSchema(t.InputSchema)
+		wantsSession[t.Name] = ws
 		if allowed != nil && !allowed[t.Name] {
+			// Discovered but policy-gated: not offered to the model. If an admin
+			// approves an escalation for it, the executor can still run it.
 			continue
 		}
-		params, ws := prepareToolSchema(t.InputSchema)
+		offered[t.Name] = true
 		specs = append(specs, agentrun.ToolSpec{
 			Name:        t.Name,
 			Description: t.Description,
 			Parameters:  params,
 		})
-		wantsSession[t.Name] = ws
 	}
 	sort.Slice(specs, func(i, j int) bool { return specs[i].Name < specs[j].Name })
-	return specs, wantsSession
+	return specs, wantsSession, offered
 }
 
 // prepareToolSchema rewrites a drun tool's inputSchema into the JSON-Schema the
@@ -250,17 +283,49 @@ func defaultBundleVerifier(bundle json.RawMessage, now time.Time) error {
 type toolExecutor struct {
 	conn         drunConn
 	sessionID    string
-	wantsSession map[string]bool // offered tools -> inject session_id
+	offered      map[string]bool // tools offered to the model (policy-allowed, no approval needed)
+	wantsSession map[string]bool // every executable drun tool -> inject session_id
+
+	mu       sync.Mutex
+	approved map[string]bool // tools an admin approved this run, unblocked for resume (ADR-0004 §6)
+}
+
+// allow records that an escalation for name was approved, so the next Execute of
+// name proceeds instead of blocking again. It is called by the escalation hook
+// on an approved decision before the turn loop resumes the tool.
+func (e *toolExecutor) allow(name string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.approved == nil {
+		e.approved = make(map[string]bool)
+	}
+	e.approved[name] = true
+}
+
+// isApproved reports whether name was approved this run.
+func (e *toolExecutor) isApproved(name string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.approved[name]
 }
 
 // Execute runs one model-proposed tool call against the bound drun session.
 func (e *toolExecutor) Execute(ctx context.Context, name string, args json.RawMessage) (string, error) {
-	injectSession, offered := e.wantsSession[name]
-	if !offered {
-		// Outside the offered set: block so it escalates (ADR-0004 §4/§6)
-		// rather than silently running an ungoverned tool.
+	// Console-owned lifecycle/host-write tools (create/close/restore, and
+	// commit/export/snapshot) are never executable by the agent — not even on
+	// approval. This is what keeps host-file commits off the agent loop (the
+	// core diff-before-commit guarantee, design §6.3). They are dropped from the
+	// tool menu, so a call here means the model went off-menu: block it.
+	if managementTools[name] {
+		return "", fmt.Errorf("%w: tool %q is reserved to the console", agentrun.ErrToolBlocked, name)
+	}
+	// Offered tools run immediately. A policy-gated tool runs only after an
+	// admin approves its escalation (allow); until then, block so it escalates
+	// (ADR-0004 §4/§6) rather than silently running ungoverned.
+	if !e.offered[name] && !e.isApproved(name) {
 		return "", fmt.Errorf("%w: tool %q is not in this session's allowed tool set", agentrun.ErrToolBlocked, name)
 	}
+	injectSession := e.wantsSession[name]
 
 	argMap := map[string]any{}
 	if trimmed := bytes.TrimSpace(args); len(trimmed) > 0 && string(trimmed) != "null" {

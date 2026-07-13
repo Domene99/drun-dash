@@ -215,7 +215,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			emitter.onStep(step)
 			writeSSEEvent(w, flusher, "step", views.RenderStepFragment(toStepView(step)))
 		},
-		OnBlocked: s.escalation(r.Context(), token, sessionID),
+		OnBlocked: s.escalation(r.Context(), token, sessionID, func(fragment string) {
+			writeSSEEvent(w, flusher, "step", fragment)
+		}, engine.executor.allow),
 	}
 
 	_, runErr := agentrun.Run(r.Context(), cfg, directive)
@@ -238,14 +240,83 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // escalation returns the turn loop's OnBlocked hook: it raises a visible
-// approval for a policy-blocked tool call and fails closed (Denied), so the
-// blocked action never runs and the model gets a governed denial to adapt to
-// (ADR-0004 §6). Live poll-to-approve-then-resume is future work; this batch
-// records the escalation and denies the current turn.
-func (s *Server) escalation(ctx context.Context, token, sessionID string) func(action, reason string) agentrun.Decision {
+// approval for a policy-blocked tool call, shows it as a pending "waiting for
+// approval" step in the chat, and pauses the step while it polls the approval
+// to completion (ADR-0004 §6). On approved it returns [agentrun.Approved] so the
+// loop resumes the blocked tool and feeds its real result back to the model; on
+// denied, expired, or a bounded-wait timeout it returns [agentrun.Denied] so the
+// loop feeds a governed denial back instead. Nothing blocked ever runs
+// un-approved. notify streams a fragment into the live transcript (it runs on
+// the turn goroutine, so it shares the SSE writer safely).
+func (s *Server) escalation(ctx context.Context, token, sessionID string, notify func(string), onApprove func(action string)) func(action, reason string) agentrun.Decision {
 	return func(action, reason string) agentrun.Decision {
-		s.raiseApproval(ctx, token, sessionID, action, reason)
+		approval, err := s.client.CreateApproval(ctx, token, sessionID, action, reason, map[string]any{
+			"tool":   action,
+			"source": "member-console",
+		})
+		if err != nil {
+			// Could not raise the escalation: fail closed. Without an approval
+			// id there is nothing to poll, so deny (the blocked action never
+			// runs) and let the model adapt.
+			s.logger.ErrorContext(ctx, "member-console: raise approval",
+				slog.String("session_id", sessionID), slog.String("action", action), slog.Any("error", err))
+			if notify != nil {
+				notify(views.RenderEscalationFragment(action, "", "error"))
+			}
+			return agentrun.Denied
+		}
+
+		if notify != nil {
+			notify(views.RenderEscalationFragment(action, approval.ID, approvalPending))
+		}
+
+		status := s.waitForApproval(ctx, token, approval.ID)
+		if status == approvalApproved {
+			// Unblock the tool for the loop's resume, then report resolution.
+			if onApprove != nil {
+				onApprove(action)
+			}
+			if notify != nil {
+				notify(views.RenderEscalationFragment(action, approval.ID, status))
+			}
+			return agentrun.Approved
+		}
+		if notify != nil {
+			notify(views.RenderEscalationFragment(action, approval.ID, status))
+		}
 		return agentrun.Denied
+	}
+}
+
+// waitForApproval polls the escalation queue for approvalID until it is decided
+// (approved/denied/expired), the request is cancelled, or the bounded wait
+// elapses — whichever comes first. A timeout is treated as expired, i.e. a
+// denial, so a blocked action is never resumed just because no admin acted in
+// time (documented fail-closed bound, ADR-0004 §6). The poll cadence and the
+// wait bound are configurable (WithApprovalPollInterval / WithApprovalWaitTimeout).
+func (s *Server) waitForApproval(parent context.Context, token, approvalID string) string {
+	ctx, cancel := context.WithTimeout(parent, s.approvalWaitTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(s.approvalPollInterval)
+	defer ticker.Stop()
+
+	for {
+		status, err := s.client.GetApprovalStatus(ctx, token, approvalID)
+		switch {
+		case err != nil:
+			s.logger.ErrorContext(ctx, "member-console: poll approval",
+				slog.String("approval_id", approvalID), slog.Any("error", err))
+		case status == approvalApproved || status == approvalDenied || status == approvalExpired:
+			return status
+		}
+		// pending or not-yet-visible: keep waiting until the next tick or the
+		// bounded deadline.
+		select {
+		case <-ctx.Done():
+			return approvalExpired
+		case <-ticker.C:
+		}
 	}
 }
 

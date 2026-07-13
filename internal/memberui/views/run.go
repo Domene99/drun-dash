@@ -116,6 +116,23 @@ func renderRunBody(w io.Writer, data RunData) error {
 	}
 	b.WriteString(`</section>`)
 
+	if data.EngineReady {
+		// Checkpoint timeline (design §6.3): HTMX-refreshed fragment that shows
+		// the run's checkpoints (and any forks) as the loop proceeds.
+		b.WriteString(`<section class="card">`)
+		b.WriteString(`<h2>Checkpoint timeline</h2>`)
+		b.WriteString(`<div id="timeline" hx-get="/sessions/` + templ.EscapeString(data.SessionID) + `/timeline" hx-trigger="load, every 5s"><p class="muted">Loading timeline…</p></div>`)
+		b.WriteString(`</section>`)
+
+		// Diff-before-commit (design §6.3): the only path to host files, gated
+		// on an explicit member review + approve action.
+		b.WriteString(`<section class="card">`)
+		b.WriteString(`<h2>Host changes</h2>`)
+		b.WriteString(`<p class="muted">The agent's work stays in the sandbox. Nothing is written to your host files until you review the diff and approve.</p>`)
+		b.WriteString(`<div id="hostchanges">` + reviewButton(data.SessionID) + `</div>`)
+		b.WriteString(`</section>`)
+	}
+
 	// Conversation.
 	b.WriteString(`<section class="card">`)
 	b.WriteString(`<h2>Conversation</h2>`)
@@ -221,4 +238,28 @@ func orDashStr(s string) string {
 		return "—"
 	}
 	return s
+}
+
+// RenderEscalationFragment renders the pending/resolved state of a policy
+// escalation as a single-line SSE step fragment (ADR-0004 §6). status is the
+// approval status the console polled: "pending" while it waits for a decision,
+// "approved" when the blocked tool will resume, "error" when the approval could
+// not be raised, or a terminal denial ("denied"/"expired"). It must contain no
+// raw newlines (it is one SSE data line).
+func RenderEscalationFragment(action, approvalID, status string) string {
+	code := "<code>" + templ.EscapeString(action) + "</code>"
+	switch status {
+	case "pending":
+		id := ""
+		if approvalID != "" {
+			id = ` <code>` + templ.EscapeString(approvalID) + `</code>`
+		}
+		return `<div class="step escalated">&#9203; ` + code + ` — waiting for approval` + id + `…</div>`
+	case "approved":
+		return `<div class="step escalated">&#9989; ` + code + ` — approved; resuming the action</div>`
+	case "error":
+		return `<div class="step escalated">&#9888; ` + code + ` — could not raise an approval; denied</div>`
+	default:
+		return `<div class="step escalated">&#9940; ` + code + ` — ` + templ.EscapeString(orDashStr(status)) + `; not run</div>`
+	}
 }
