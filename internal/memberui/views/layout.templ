@@ -52,6 +52,9 @@ templ Layout(title string, showNav bool) {
 				}
 				.topnav .brand { font-weight: 700; letter-spacing: 0.02em; }
 				.topnav form.logout { margin-left: auto; }
+				.topnav a { color: #cdd7e5; text-decoration: none; font-size: 0.9rem; }
+				.topnav a:hover { color: #fff; }
+				.navlinks { display: flex; gap: 1rem; }
 				.topnav button {
 					background: transparent;
 					border: 1px solid #35506f;
@@ -93,13 +96,32 @@ templ Layout(title string, showNav bool) {
 				}
 				button.primary { background: #1d4ed8; color: #fff; border: 0; }
 				button.deny { border-color: #f0c2bc; color: #b42318; }
+				.badge { background: #1d4ed8; color: #fff; border-radius: 4px; padding: 0 0.4rem; font-size: 0.7rem; vertical-align: middle; }
+				.ok { color: #067647; font-weight: 600; }
+				.meta { color: #667085; font-size: 0.8rem; }
+				ol.timeline { margin: 0.5rem 0; padding-left: 1.2rem; }
+				ol.timeline li { margin: 0.15rem 0; }
+				pre.diff { background: #0f1b2d; color: #cdd7e5; padding: 0.75rem; border-radius: 6px; overflow: auto; font-size: 0.8rem; max-height: 24rem; white-space: pre; }
+				.actions { margin-top: 0.5rem; display: flex; gap: 0.5rem; }
+				fieldset { border: 1px solid #e2e6eb; border-radius: 6px; margin: 0.5rem 0; }
+				label.agent { display: inline-block; margin: 0.2rem 0.6rem 0.2rem 0; }
+				textarea { width: 100%; font-family: inherit; font-size: 0.9rem; padding: 0.4rem; border: 1px solid #cbd5e1; border-radius: 4px; }
+				.step { padding: 0.15rem 0; font-size: 0.88rem; }
+				.msg { padding: 0.3rem 0.5rem; margin: 0.2rem 0; border-radius: 6px; }
+				.msg.user { background: #eef2ff; }
+				.msg.agent { background: #f6f7f9; }
+				.chat { margin-top: 0.75rem; }
 			</style>
 		</head>
 		<body>
 			<header class="topnav">
 				<span class="brand">drun-dash · member console</span>
 				if showNav {
-					<form method="post" action="/logout" class="logout">
+					<nav class="navlinks">
+					<a href="/">Home</a>
+					<a href="/matrix">Matrix</a>
+				</nav>
+				<form method="post" action="/logout" class="logout">
 						<button type="submit">Sign out</button>
 					</form>
 				}

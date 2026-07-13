@@ -57,11 +57,39 @@ importing it.
     `TrajectoryEvent` per step to `POST /sessions/{id}/trajectory` — tool name,
     value type, byte size; **never** raw commands, file contents, or model text.
     The batch posts off the member's critical path (idempotent by `event_id`).
-  - **Escalations (§6).** A tool call outside the offered set is blocked; the
-    console raises `POST /approvals` (structure-only context) and fails closed —
-    the blocked action never runs and the model gets a governed denial. A proxy
-    `401/403` likewise raises an approval. Live poll-to-approve-then-resume is
-    future work.
+  - **Checkpoint timeline (§6.3).** `GET /sessions/{id}/timeline` renders the
+    bound session's checkpoint/fork tree from `drunmcp.SessionHistory` /
+    `SessionTree` (id, label, parent, file delta, current head, forks). The run
+    view polls it (HTMX `hx-trigger`), so the checkpoints `agentrun` creates
+    before risky steps appear as the run proceeds. A poll that lands mid-turn
+    (the sequential drun client is busy) shows a "run in progress" note and
+    refreshes once the turn settles.
+  - **Diff-before-commit (§6.3) — the host-file-safety guarantee.** Nothing the
+    agent did in the sandbox reaches the member's host files without an explicit
+    member approval. `GET /sessions/{id}/diff` renders the pending
+    `drunmcp.SessionDiff` (mounted baseline → current) with **Approve** /
+    **Reject** actions; `POST /sessions/{id}/commit` is the only path that calls
+    `drunmcp.SessionCommit`, and only on that explicit member action;
+    `POST /sessions/{id}/reject` commits nothing. The agent loop is never offered
+    `session_commit`/`session_export`/`session_snapshot`, and the tool executor
+    refuses them even if an escalation is (erroneously) approved.
+  - **Escalations, approve/resume (§6).** A policy-gated tool call is blocked and
+    raised as `POST /approvals` (structure-only context), shown as a pending
+    "waiting for approval" step in the chat, and paused — the action does not run
+    and no result is fabricated. The console polls the escalation queue
+    (`GET /approvals`, matched by id via `Client.GetApprovalStatus`), bounded by
+    `MEMBER_CONSOLE_APPROVAL_TIMEOUT`: on **approved** it resumes and executes the
+    blocked tool, feeding its real result back to the model; on
+    **denied/expired/timeout** it feeds a governed denial so the model adapts. A
+    proxy `401/403` likewise raises an approval. Admins decide in the admin UI
+    (`POST /approvals/{id}/decision`).
+- **Matrix (§6.3).** `GET /matrix` lets the member enter a directive and a scorer
+  and pick N of their entitled agents; `POST /matrix` fans the run across them via
+  `internal/matrix.Run` — the console implements matrix's `ControlPlane`
+  (launch/terminate over the memberui client) and `Runner` (each branch's
+  directive/scorer runs as a governed `agentrun` turn through that branch's proxy
+  grant), mirroring `internal/cli/matrix.go`. It shows the ranked branches (agent,
+  score, status) and the winner, and terminates every launched session at the end.
 - **Health.** `GET /healthz` returns a static `{"status":"ok"}`.
 
 ### Known limitations
@@ -90,6 +118,8 @@ comment):
 | `MEMBER_CONSOLE_CLIENT_ID`  | `drun-dash-member-console`     | Device-flow `client_id`                  |
 | `MEMBER_CONSOLE_MODEL`      | _(unset)_                      | Model id passed to the proxy (runs need it) |
 | `DRUN_MCP_ENDPOINT`         | `http://127.0.0.1:7273/mcp`    | Local drun engine endpoint               |
+| `MEMBER_CONSOLE_APPROVAL_TIMEOUT`       | `5m` | How long a blocked step waits for a decision before falling closed (denied) |
+| `MEMBER_CONSOLE_APPROVAL_POLL_INTERVAL` | `3s` | How often to poll the escalation queue while waiting |
 
 > Naming note: the console reads `DRUN_MCP_ENDPOINT`; `pkg/drunmcp`'s integration
 > tests use `DRUNMCP_ENDPOINT`. Reconciling the two is a minor follow-up
@@ -101,8 +131,10 @@ Secure cookies are enabled only in production (HTTPS).
 
 The `*.templ` files under `views/` are the source of truth; the committed
 `*_templ.go` files are generated with `templ generate`. The conversational run
-view (`views/run.go`) is the exception: it is authored directly as Go
-`templ.Component`s because it needs string-returning fragment renderers for the
-SSE stream (each step is one `data:` line), which templ's component-only output
-does not express. Edit the `.templ` files and regenerate — never hand-edit the
-generated Go; `run.go` is hand-authored and edited directly.
+view (`views/run.go`) and the dynamic run-view panels (`views/console_views.go`
+— checkpoint timeline, diff review, matrix) are the exception: they are authored
+directly as Go `templ.Component`s because they are HTMX fragments (and the SSE
+stream needs string-returning renderers where each step is one `data:` line),
+which templ's component-only output does not express. Edit the `.templ` files and
+regenerate — never hand-edit the generated Go; `run.go` and `console_views.go`
+are hand-authored and edited directly.

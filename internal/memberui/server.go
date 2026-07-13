@@ -46,6 +46,15 @@ const deviceLoginTTL = 10 * time.Minute
 // keeps a hung upstream from wedging a run without cutting healthy calls short.
 const proxyRequestTimeout = 2 * time.Minute
 
+// defaultApprovalPollInterval and defaultApprovalWaitTimeout bound the
+// escalation approve/resume poll (ADR-0004 §6): a policy-blocked step raises an
+// approval and pauses while the console polls the escalation queue this often,
+// for at most this long before it falls closed (treated as denied).
+const (
+	defaultApprovalPollInterval = 3 * time.Second
+	defaultApprovalWaitTimeout  = 5 * time.Minute
+)
+
 // ctxKey is the private context-key type for values this package stashes on the
 // request context.
 type ctxKey int
@@ -91,6 +100,12 @@ type Server struct {
 	verify       bundleVerifier
 	now          func() time.Time
 	newEventID   func() string
+
+	// Escalation approve/resume timing (ADR-0004 §6): how often to poll the
+	// control-plane escalation queue for a blocked step's decision, and how long
+	// to wait before the bounded timeout falls closed (treated as denied).
+	approvalPollInterval time.Duration
+	approvalWaitTimeout  time.Duration
 
 	mu       sync.Mutex
 	sessions map[string]*launchedSession
@@ -185,6 +200,27 @@ func WithEventIDFunc(newID func() string) Option {
 	}
 }
 
+// WithApprovalPollInterval overrides how often the escalation approve/resume
+// loop polls the control-plane escalation queue for a decision. Tests set a
+// tiny interval so a blocked-then-approved poll resolves without real waiting.
+func WithApprovalPollInterval(d time.Duration) Option {
+	return func(s *Server) {
+		if d > 0 {
+			s.approvalPollInterval = d
+		}
+	}
+}
+
+// WithApprovalWaitTimeout overrides how long a blocked step waits for a decision
+// before it falls closed (treated as denied). Tests set a small bound.
+func WithApprovalWaitTimeout(d time.Duration) Option {
+	return func(s *Server) {
+		if d > 0 {
+			s.approvalWaitTimeout = d
+		}
+	}
+}
+
 // New builds a Server that renders pages from live data fetched through client.
 // Pass nil for logger to use [slog.Default]. The returned Server is ready to
 // serve; its routes are wired once, here.
@@ -202,8 +238,12 @@ func New(client *Client, logger *slog.Logger, opts ...Option) *Server {
 		verify:       defaultBundleVerifier,
 		now:          time.Now,
 		newEventID:   randomEventID,
-		sessions:     make(map[string]*launchedSession),
-		runs:         make(map[string]*runState),
+
+		approvalPollInterval: defaultApprovalPollInterval,
+		approvalWaitTimeout:  defaultApprovalWaitTimeout,
+
+		sessions: make(map[string]*launchedSession),
+		runs:     make(map[string]*runState),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -236,6 +276,12 @@ func (s *Server) routes() chi.Router {
 		r.Get("/sessions/{sessionId}", s.handleRunView)
 		r.Post("/sessions/{sessionId}/turn", s.handleTurn)
 		r.Get("/sessions/{sessionId}/stream", s.handleStream)
+		r.Get("/sessions/{sessionId}/timeline", s.handleTimeline)
+		r.Get("/sessions/{sessionId}/diff", s.handleDiff)
+		r.Post("/sessions/{sessionId}/commit", s.handleCommit)
+		r.Post("/sessions/{sessionId}/reject", s.handleReject)
+		r.Get("/matrix", s.handleMatrixView)
+		r.Post("/matrix", s.handleMatrixRun)
 	})
 
 	return r

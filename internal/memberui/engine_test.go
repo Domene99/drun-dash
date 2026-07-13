@@ -22,6 +22,15 @@ type fakeDrunConn struct {
 	callFn func(name string, args any) (*drunmcp.CallToolResult, error)
 	calls  []fakeToolCall
 	closed bool
+
+	// Checkpoint-timeline / diff-before-commit stubs (design §6.3).
+	historyText string
+	treeText    string
+	diffText    string
+	diffErr     error
+	commitErr   error
+	committed   bool
+	commitKeys  []string
 }
 
 type fakeToolCall struct {
@@ -61,6 +70,34 @@ func (f *fakeDrunConn) CallTool(_ context.Context, name string, args any) (*drun
 func (f *fakeDrunConn) SessionClose(context.Context, string) error {
 	f.closed = true
 	return nil
+}
+
+func textResult(text string) *drunmcp.CallToolResult {
+	return &drunmcp.CallToolResult{Content: []drunmcp.ContentBlock{{Type: "text", Text: text}}}
+}
+
+func (f *fakeDrunConn) SessionHistory(context.Context, string) (*drunmcp.CallToolResult, error) {
+	return textResult(f.historyText), nil
+}
+
+func (f *fakeDrunConn) SessionTree(context.Context, string) (*drunmcp.CallToolResult, error) {
+	return textResult(f.treeText), nil
+}
+
+func (f *fakeDrunConn) SessionDiff(_ context.Context, _ string, _, _ drunmcp.CheckpointRef) (string, error) {
+	if f.diffErr != nil {
+		return "", f.diffErr
+	}
+	return f.diffText, nil
+}
+
+func (f *fakeDrunConn) SessionCommit(_ context.Context, _ string, keys ...string) (*drunmcp.CallToolResult, error) {
+	if f.commitErr != nil {
+		return nil, f.commitErr
+	}
+	f.committed = true
+	f.commitKeys = keys
+	return textResult("committed"), nil
 }
 
 // bashTool is a representative drun tool whose schema requires session_id.
@@ -132,7 +169,7 @@ func TestBuildToolSetDropsManagementAndIntersects(t *testing.T) {
 	}
 
 	// No policy list: full set minus management tools.
-	specs, wants := buildToolSet(tools, nil)
+	specs, wants, offered := buildToolSet(tools, nil)
 	if len(specs) != 2 {
 		t.Fatalf("specs = %d, want 2 (management dropped)", len(specs))
 	}
@@ -143,13 +180,50 @@ func TestBuildToolSetDropsManagementAndIntersects(t *testing.T) {
 		t.Error("session_bash should want a session_id injected")
 	}
 	if _, ok := wants["create_session"]; ok {
-		t.Error("management tool should not appear in the offered set")
+		t.Error("management tool should not appear in wantsSession")
+	}
+	if !offered["session_bash"] || !offered["session_read_file"] || len(offered) != 2 {
+		t.Errorf("offered set = %v, want both non-management tools", offered)
 	}
 
 	// Policy list intersects.
-	specs2, _ := buildToolSet(tools, map[string]bool{"session_bash": true})
+	specs2, wants2, offered2 := buildToolSet(tools, map[string]bool{"session_bash": true})
 	if len(specs2) != 1 || specs2[0].Name != "session_bash" {
 		t.Errorf("intersection failed: %+v", specs2)
+	}
+	if offered2["session_read_file"] {
+		t.Error("a policy-gated tool must not be offered to the model")
+	}
+	if !wants2["session_read_file"] {
+		t.Error("a policy-gated tool must still be in wantsSession so an approved escalation can run it")
+	}
+}
+
+func TestBuildToolSetWithholdsHostWrites(t *testing.T) {
+	tools := []drunmcp.Tool{
+		bashTool(),
+		{Name: "session_commit"},
+		{Name: "session_export"},
+		{Name: "session_snapshot"},
+	}
+	specs, wants, offered := buildToolSet(tools, nil)
+	if len(specs) != 1 || specs[0].Name != "session_bash" {
+		t.Fatalf("host-write tools should be withheld from the model: %+v", specs)
+	}
+	for _, name := range []string{"session_commit", "session_export", "session_snapshot"} {
+		if offered[name] || wants[name] {
+			t.Errorf("%s must never be offered or executable by the agent", name)
+		}
+	}
+}
+
+func TestToolExecutorBlocksHostWriteEvenIfApproved(t *testing.T) {
+	exec := &toolExecutor{conn: &fakeDrunConn{}, sessionID: "drun-sess", offered: map[string]bool{}, wantsSession: map[string]bool{}}
+	// Even after an (erroneous) approval, a host-write/lifecycle tool is never
+	// executable by the agent — the core diff-before-commit guarantee.
+	exec.allow("session_commit")
+	if _, err := exec.Execute(context.Background(), "session_commit", json.RawMessage(`{}`)); !errors.Is(err, agentrun.ErrToolBlocked) {
+		t.Errorf("session_commit must stay blocked even if approved, got %v", err)
 	}
 }
 
@@ -161,7 +235,7 @@ func TestToolExecutorInjectsSessionAndBlocksUnknown(t *testing.T) {
 		}
 		return &drunmcp.CallToolResult{Content: []drunmcp.ContentBlock{{Type: "text", Text: "listed"}}}, nil
 	}}
-	exec := &toolExecutor{conn: conn, sessionID: "drun-sess", wantsSession: map[string]bool{"session_bash": true}}
+	exec := &toolExecutor{conn: conn, sessionID: "drun-sess", offered: map[string]bool{"session_bash": true}, wantsSession: map[string]bool{"session_bash": true}}
 
 	out, err := exec.Execute(context.Background(), "session_bash", json.RawMessage(`{"command":"ls"}`))
 	if err != nil {
@@ -187,7 +261,7 @@ func TestToolExecutorNoSessionInjectionWhenNotWanted(t *testing.T) {
 		}
 		return &drunmcp.CallToolResult{}, nil
 	}}
-	exec := &toolExecutor{conn: conn, sessionID: "drun-sess", wantsSession: map[string]bool{"session_tree": false}}
+	exec := &toolExecutor{conn: conn, sessionID: "drun-sess", offered: map[string]bool{"session_tree": true}, wantsSession: map[string]bool{"session_tree": false}}
 	if _, err := exec.Execute(context.Background(), "session_tree", nil); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
