@@ -1,0 +1,486 @@
+// The templ component library for the drun-dash design system (ADR-0005).
+//
+// Every component here is presentational and references design tokens (via the
+// uk-* classes in assets/uikit.css) only. Configuration types and class
+// helpers live in components.go; this file is the markup.
+//
+// The *.templ file is the source of truth; the committed *_templ.go is
+// generated from it with `templ generate` (see README.md). Edit the .templ and
+// regenerate — never hand-edit the generated Go.
+package uikit
+
+// themeInitScript runs before first paint to apply the operator's stored theme,
+// avoiding a flash of the wrong theme. Interaction (the toggle, modals, copy)
+// is handled by the deferred theme-toggle.js.
+const themeInitScript = "(function(){try{var t=localStorage.getItem('uikit-theme');if(t==='dark'||t==='light'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();"
+
+// Head renders the document <head>: metadata, the initial-theme script, the
+// content-hashed stylesheet, HTMX, and the deferred theme script. Compose it
+// into a page with [Shell].
+templ Head(cfg HeadConfig) {
+	<head>
+		<meta charset="utf-8"/>
+		<meta name="viewport" content="width=device-width, initial-scale=1"/>
+		<meta name="color-scheme" content="light dark"/>
+		<title>{ stringOr(cfg.Title, "drun-dash") } · drun-dash</title>
+		@templ.Raw("<script>" + themeInitScript + "</script>")
+		<link rel="stylesheet" href={ StylesheetURL() }/>
+		<script src={ htmxScriptURL } defer></script>
+		<script src={ ScriptURL() } defer></script>
+		if cfg.Extra != nil {
+			@cfg.Extra
+		}
+	</head>
+}
+
+// Shell is the outer page frame: <html> + head + body with an optional sidebar,
+// an optional top bar, and the page content (its children) in the main region.
+// A skip link and semantic landmarks make it keyboard-navigable.
+templ Shell(cfg ShellConfig) {
+	<!DOCTYPE html>
+	<html lang={ stringOr(cfg.Lang, "en") }>
+		if cfg.Head != nil {
+			@cfg.Head
+		}
+		<body>
+			<a class="uk-skip-link" href="#uk-content">Skip to content</a>
+			<div class={ shellClass(cfg.Sidebar != nil) }>
+				if cfg.Sidebar != nil {
+					<aside class="uk-shell-aside">
+						@cfg.Sidebar
+					</aside>
+				}
+				<div class="uk-shell-main">
+					if cfg.TopBar != nil {
+						@cfg.TopBar
+					}
+					<main id="uk-content" class="uk-content" tabindex="-1">
+						{ children... }
+					</main>
+				</div>
+			</div>
+		</body>
+	</html>
+}
+
+// Sidebar renders the admin left navigation: a brand word-mark over grouped nav
+// sections with active/disabled states. The member app omits it (see [Shell]).
+templ Sidebar(cfg SidebarConfig) {
+	<div class="uk-sidebar">
+		<a class="uk-sidebar-brand" href={ templ.SafeURL(stringOr(cfg.BrandHref, "/")) }>{ cfg.Brand }</a>
+		<nav aria-label="Primary">
+			for _, group := range cfg.Groups {
+				<div class="uk-nav-group">
+					if group.Label != "" {
+						<div class="uk-nav-group-label">{ group.Label }</div>
+					}
+					<ul class="uk-nav">
+						for _, item := range group.Items {
+							<li>
+								@navItem(item)
+							</li>
+						}
+					</ul>
+				</div>
+			}
+		</nav>
+		if cfg.Footer != nil {
+			<div class="uk-sidebar-footer">
+				@cfg.Footer
+			</div>
+		}
+	</div>
+}
+
+// navItem renders one sidebar link. Disabled items render as a non-interactive
+// span so a reserved-but-unshipped nav slot is visible yet inert.
+templ navItem(item NavItem) {
+	if item.Disabled {
+		<span class={ navItemClass(item) } aria-disabled="true">
+			if item.Icon != nil {
+				<span class="uk-nav-icon" aria-hidden="true">@item.Icon
+</span>
+			}
+			<span>{ item.Label }</span>
+		</span>
+	} else {
+		<a
+			class={ navItemClass(item) }
+			href={ templ.SafeURL(item.Href) }
+			if item.Active {
+				aria-current="page"
+			}
+			{ item.Attrs... }
+		>
+			if item.Icon != nil {
+				<span class="uk-nav-icon" aria-hidden="true">@item.Icon
+</span>
+			}
+			<span>{ item.Label }</span>
+		</a>
+	}
+}
+
+// TopBar renders the sticky top bar: org name + optional environment indicator
+// on the left; the dark-mode toggle and user menu on the right.
+templ TopBar(cfg TopBarConfig) {
+	<header class="uk-topbar">
+		<div class="uk-topbar-org">
+			<span>{ cfg.OrgName }</span>
+			if cfg.Environment != "" {
+				<span class="uk-env">{ cfg.Environment }</span>
+			}
+		</div>
+		if cfg.Leading != nil {
+			@cfg.Leading
+		}
+		<div class="uk-topbar-spacer"></div>
+		<div class="uk-topbar-actions">
+			if !cfg.HideThemeToggle {
+				@ThemeToggle()
+			}
+			if cfg.UserMenu != nil {
+				@cfg.UserMenu
+			}
+		</div>
+	</header>
+}
+
+// ThemeToggle renders the dark-mode toggle button. theme-toggle.js flips and
+// persists the choice; CSS swaps the sun/moon glyph per active theme.
+templ ThemeToggle() {
+	<button type="button" class="uk-btn uk-btn--ghost uk-theme-toggle" data-uk-theme-toggle aria-label="Toggle dark mode">
+		<span class="uk-icon-moon" aria-hidden="true">
+			@iconMoon()
+		</span>
+		<span class="uk-icon-sun" aria-hidden="true">
+			@iconSun()
+		</span>
+	</button>
+}
+
+// PageHeader renders the consistent page opener: title + optional description,
+// with an optional primary-action slot on the right (ADR-0005 §5).
+templ PageHeader(cfg PageHeaderConfig) {
+	<div class="uk-page-header">
+		<div class="uk-page-header-text">
+			<h1>{ cfg.Title }</h1>
+			if cfg.Description != "" {
+				<p class="uk-page-header-desc">{ cfg.Description }</p>
+			}
+		</div>
+		if cfg.Action != nil {
+			<div class="uk-page-header-action">
+				@cfg.Action
+			</div>
+		}
+	</div>
+}
+
+// Card is the standard surface container. With a Title it renders a header
+// (and optional header Action); its body is the component's children.
+templ Card(cfg CardConfig) {
+	<section class={ cardClass(cfg.Class) } { cfg.Attrs... }>
+		if cfg.Title != "" {
+			<div class="uk-card-header">
+				<h2>{ cfg.Title }</h2>
+				if cfg.Action != nil {
+					<div>@cfg.Action
+</div>
+				}
+			</div>
+		}
+		{ children... }
+	</section>
+}
+
+// Metrics renders the Overview metric-card row (label + big figure each).
+templ Metrics(items []Metric) {
+	<div class="uk-metrics">
+		for _, m := range items {
+			<div class="uk-metric">
+				<span class="uk-metric-label">{ m.Label }</span>
+				<span class="uk-metric-value">{ m.Value }</span>
+			</div>
+		}
+	</div>
+}
+
+// Table wraps a scrollable, bordered <table class="uk-table">. Supply the
+// <thead>/<tbody> as children; add class "uk-num" to numeric <th>/<td> for
+// right-aligned tabular figures. Zebra striping and hover come from the CSS.
+templ Table() {
+	<div class="uk-table-wrap">
+		<table class="uk-table">
+			{ children... }
+		</table>
+	</div>
+}
+
+// Badge renders a status pill. Status is conveyed by text AND color (never
+// color alone). Prefer [StatusBadge] when mapping from a domain status string.
+templ Badge(cfg BadgeConfig) {
+	<span class={ badgeClass(cfg.Variant) }>{ cfg.Label }</span>
+}
+
+// StatusBadge renders a badge whose color is derived from a domain status
+// string via the shared vocabulary ([StatusVariant]), keeping the same status
+// the same color across both apps.
+templ StatusBadge(status string) {
+	@Badge(BadgeConfig{Variant: StatusVariant(status), Label: status})
+}
+
+// Button renders a <button> in one of the four locked variants; its label is
+// the children. Attach behavior (hx-*, name/value) via ButtonConfig.Attrs.
+templ Button(cfg ButtonConfig) {
+	<button
+		type={ stringOr(cfg.Type, "button") }
+		class={ buttonClass(cfg.Variant, cfg.Small) }
+		disabled?={ cfg.Disabled }
+		{ cfg.Attrs... }
+	>
+		{ children... }
+	</button>
+}
+
+// ButtonLink renders an <a> styled as a button (same variants). Use it for
+// navigation actions; its label is the children.
+templ ButtonLink(cfg ButtonLinkConfig) {
+	<a
+		class={ buttonClass(cfg.Variant, cfg.Small) + linkDisabledClass(cfg.Disabled) }
+		href={ templ.SafeURL(cfg.Href) }
+		if cfg.Disabled {
+			aria-disabled="true"
+			tabindex="-1"
+		}
+		{ cfg.Attrs... }
+	>
+		{ children... }
+	</a>
+}
+
+// Field wraps a form control with its label and optional help/error text. The
+// control (an [Input], [Textarea], [Select], …) is the component's children.
+templ Field(cfg FieldConfig) {
+	<div class="uk-field">
+		if cfg.Label != "" {
+			<label class="uk-label" for={ cfg.For }>
+				{ cfg.Label }
+				if cfg.Required {
+					<span class="uk-label-required" aria-hidden="true">*</span>
+				}
+			</label>
+		}
+		{ children... }
+		if cfg.Error != "" {
+			<span class="uk-error" role="alert">{ cfg.Error }</span>
+		} else if cfg.Help != "" {
+			<span class="uk-help">{ cfg.Help }</span>
+		}
+	</div>
+}
+
+// Input renders a single-line text input with a visible border and focus ring.
+templ Input(cfg InputConfig) {
+	<input
+		class="uk-input"
+		type={ stringOr(cfg.Type, "text") }
+		if cfg.Name != "" {
+			name={ cfg.Name }
+		}
+		if cfg.ID != "" {
+			id={ cfg.ID }
+		}
+		if cfg.Value != "" {
+			value={ cfg.Value }
+		}
+		if cfg.Placeholder != "" {
+			placeholder={ cfg.Placeholder }
+		}
+		aria-invalid={ ariaBool(cfg.Invalid) }
+		disabled?={ cfg.Disabled }
+		{ cfg.Attrs... }
+	/>
+}
+
+// Textarea renders a multi-line input; its Value is the initial text content.
+templ Textarea(cfg TextareaConfig) {
+	<textarea
+		class="uk-textarea"
+		if cfg.Name != "" {
+			name={ cfg.Name }
+		}
+		if cfg.ID != "" {
+			id={ cfg.ID }
+		}
+		if cfg.Placeholder != "" {
+			placeholder={ cfg.Placeholder }
+		}
+		rows={ textareaRows(cfg.Rows) }
+		aria-invalid={ ariaBool(cfg.Invalid) }
+		disabled?={ cfg.Disabled }
+		{ cfg.Attrs... }
+	>{ cfg.Value }</textarea>
+}
+
+// Select renders a dropdown; supply its <option> elements as the children.
+templ Select(cfg SelectConfig) {
+	<select
+		class="uk-select"
+		if cfg.Name != "" {
+			name={ cfg.Name }
+		}
+		if cfg.ID != "" {
+			id={ cfg.ID }
+		}
+		aria-invalid={ ariaBool(cfg.Invalid) }
+		disabled?={ cfg.Disabled }
+		{ cfg.Attrs... }
+	>
+		{ children... }
+	</select>
+}
+
+// Check renders a checkbox (or radio) with an inline label.
+templ Check(cfg CheckConfig) {
+	<label class="uk-check">
+		<input
+			type={ checkType(cfg.Radio) }
+			if cfg.Name != "" {
+				name={ cfg.Name }
+			}
+			if cfg.ID != "" {
+				id={ cfg.ID }
+			}
+			if cfg.Value != "" {
+				value={ cfg.Value }
+			}
+			checked?={ cfg.Checked }
+			disabled?={ cfg.Disabled }
+			{ cfg.Attrs... }
+		/>
+		<span>{ cfg.Label }</span>
+	</label>
+}
+
+// EmptyState renders the "no data yet" pattern (optional icon, title, message)
+// with an optional action. Replaces today's bare "No sessions." paragraph.
+templ EmptyState(cfg EmptyStateConfig) {
+	<div class="uk-empty">
+		if cfg.Icon != nil {
+			<span class="uk-empty-icon" aria-hidden="true">@cfg.Icon
+</span>
+		}
+		if cfg.Title != "" {
+			<div class="uk-empty-title">{ cfg.Title }</div>
+		}
+		if cfg.Message != "" {
+			<p class="uk-muted">{ cfg.Message }</p>
+		}
+		if cfg.Action != nil {
+			<div class="uk-empty-actions">
+				@cfg.Action
+			</div>
+		}
+	</div>
+}
+
+// Alert renders an inline message in a semantic color; its body is the
+// children. Warning/danger get an assertive live role.
+templ Alert(cfg AlertConfig) {
+	<div class={ alertClass(cfg.Variant) } role={ alertRole(cfg.Variant) }>
+		<div class="uk-alert-body">
+			if cfg.Title != "" {
+				<div class="uk-alert-title">{ cfg.Title }</div>
+			}
+			{ children... }
+		</div>
+	</div>
+}
+
+// Modal renders a native <dialog> (focus-trapped, Esc to close). Open it from a
+// control carrying data-uk-modal-open="<ID>". Its body is the children; Footer
+// holds the action row.
+templ Modal(cfg ModalConfig) {
+	<dialog id={ cfg.ID } class="uk-modal">
+		<div class="uk-modal-card">
+			<div class="uk-modal-header">
+				<h2 class="uk-modal-title">{ cfg.Title }</h2>
+				<button type="button" class="uk-modal-close" data-uk-modal-close aria-label="Close">
+					@iconClose()
+				</button>
+			</div>
+			<div class="uk-modal-body">
+				{ children... }
+			</div>
+			if cfg.Footer != nil {
+				<div class="uk-modal-footer">
+					@cfg.Footer
+				</div>
+			}
+		</div>
+	</dialog>
+}
+
+// ConfirmDialog renders a ready-made confirmation modal: a message plus cancel
+// and confirm buttons. Wire the action onto the confirm button via
+// ConfirmConfig.ConfirmAttrs (e.g. hx-post).
+templ ConfirmDialog(cfg ConfirmConfig) {
+	@Modal(ModalConfig{
+		ID:     cfg.ID,
+		Title:  cfg.Title,
+		Footer: confirmFooter(cfg),
+	}) {
+		<p>{ cfg.Message }</p>
+	}
+}
+
+// confirmFooter builds the cancel + confirm button row for [ConfirmDialog].
+templ confirmFooter(cfg ConfirmConfig) {
+	@Button(ButtonConfig{Variant: ButtonSecondary, Attrs: templ.Attributes{"data-uk-modal-close": true}}) {
+		{ stringOr(cfg.CancelLabel, "Cancel") }
+	}
+	@Button(ButtonConfig{
+		Variant: confirmVariant(cfg.ConfirmVariant),
+		Attrs:   cfg.ConfirmAttrs,
+	}) {
+		{ stringOr(cfg.ConfirmLabel, "Confirm") }
+	}
+}
+
+// IDChip renders a copyable, monospaced, truncated identifier — the ONLY way a
+// raw UUID appears (secondary detail, never a primary label; ADR-0005 §4).
+// Clicking copies the full ID via theme-toggle.js.
+templ IDChip(cfg IDChipConfig) {
+	<button type="button" class="uk-id-chip" data-uk-copy={ cfg.ID } title={ "Copy " + cfg.ID }>
+		if cfg.Label != "" {
+			<span class="uk-muted">{ cfg.Label }</span>
+		}
+		<span class="uk-id-chip-value">{ stringOr(cfg.Display, cfg.ID) }</span>
+		<span class="uk-id-chip-icon" aria-hidden="true">@iconCopy()
+</span>
+	</button>
+}
+
+// RelativeTime renders a human relative time with the absolute stamp on hover.
+// The app supplies both strings; uikit does no time math.
+templ RelativeTime(cfg RelativeTimeConfig) {
+	<time class="uk-relative-time" datetime={ cfg.Absolute } title={ cfg.Absolute }>{ cfg.Relative }</time>
+}
+
+// --- Inline icons (a tiny built-in set; apps may pass their own) -----------
+templ iconSun() {
+	@templ.Raw(`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>`)
+}
+
+templ iconMoon() {
+	@templ.Raw(`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg>`)
+}
+
+templ iconClose() {
+	@templ.Raw(`<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"></path></svg>`)
+}
+
+templ iconCopy() {
+	@templ.Raw(`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`)
+}
