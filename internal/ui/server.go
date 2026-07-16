@@ -126,6 +126,12 @@ func (s *Server) routes() chi.Router {
 	r.Handle(uikit.MountPrefix+"*", uikit.Handler())
 	r.Get("/login", s.handleLogin)
 	r.Post("/login", s.handleLoginSubmit)
+	r.Post("/login/token", s.handleTokenLogin)
+	r.Get("/login/sso", s.handleSSOStart)
+	r.Get("/signup", s.handleSignup)
+	r.Post("/signup", s.handleSignupSubmit)
+	r.Get("/accept-invite", s.handleAcceptInvite)
+	r.Post("/accept-invite", s.handleAcceptInviteSubmit)
 	r.Get("/callback", s.handleCallback)
 	r.Post("/logout", s.handleLogout)
 
@@ -150,9 +156,12 @@ func (s *Server) routes() chi.Router {
 		r.Post("/roles/{roleId}/update", s.handleRoleUpdate)
 		r.Post("/roles/{roleId}/delete", s.handleRoleDelete)
 		r.Get("/members", s.handleMembers)
+		r.Post("/members/invite", s.handleMemberInvite)
 		r.Post("/members/{memberId}/roles", s.handleMemberRoles)
 		r.Get("/teams", s.handleTeams)
 		r.Get("/agents", s.handleAgents)
+		r.Get("/agents/new", s.handleAgentNew)
+		r.Post("/agents", s.handleAgentCreate)
 		r.Get("/agents/{agentId}", s.handleAgentDetail)
 		r.Get("/policies", s.handlePolicies)
 		r.Get("/policies/{policyId}", s.handlePolicyDetail)
@@ -170,16 +179,25 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	_, _ = io.WriteString(w, `{"status":"ok"}`)
 }
 
-// handleLogin begins sign-in. With OIDC configured it mints a state token and
-// PKCE verifier, stores them in transient cookies, and redirects the browser to
-// the identity provider's authorize URL. Without OIDC it renders the
-// paste-a-token dev form.
+// handleLogin renders the sign-in page. The primary form is the local password
+// login (org slug + email + password); a "Sign in with SSO" button (when OIDC is
+// configured) and a collapsed paste-a-token dev section are offered alongside it.
+// Unlike before, it never auto-redirects to the identity provider — the SSO flow
+// starts from handleSSOStart via the button.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	s.render(w, r, http.StatusOK, views.Login(views.LoginData{OIDC: s.oidc != nil}))
+}
+
+// handleSSOStart begins the OIDC authorization-code browser flow: it mints a
+// state token and PKCE verifier, stores them in transient cookies, and redirects
+// the browser to the identity provider's authorize URL. The login page's "Sign
+// in with SSO" button links here (shown only when OIDC is configured); without
+// OIDC it returns to the login page.
+func (s *Server) handleSSOStart(w http.ResponseWriter, r *http.Request) {
 	if s.oidc == nil {
-		s.render(w, r, http.StatusOK, views.Login(views.LoginData{}))
+		s.redirectToLogin(w, r)
 		return
 	}
-
 	authURL, state, verifier, err := s.oidc.StartLogin()
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "admin-ui: start oidc login", slog.Any("error", err))
@@ -191,18 +209,64 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
-// handleLoginSubmit is the paste-a-token dev fallback: it reads a control-plane
-// session token from the form, stores it in the session cookie, and redirects
-// to the dashboard. An empty token re-renders the form with an error and a 400.
-// It stays available so local development works without an identity provider.
+// handleLoginSubmit is the primary local sign-in: it reads the org slug, email,
+// and password from the form, exchanges them for a session token via POST
+// /auth/login, stores the token in the session cookie, and redirects to the
+// dashboard. Invalid credentials (the generic 401) and missing fields re-render
+// the form with a readable message, preserving the submitted org slug and email.
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		s.render(w, r, http.StatusBadRequest, views.Login(views.LoginData{Error: "Could not read the submitted form."}))
+		s.render(w, r, http.StatusBadRequest, views.Login(views.LoginData{OIDC: s.oidc != nil, Error: "Could not read the submitted form."}))
+		return
+	}
+	orgSlug := strings.TrimSpace(r.PostFormValue("org_slug"))
+	email := strings.TrimSpace(r.PostFormValue("email"))
+	password := r.PostFormValue("password")
+	if orgSlug == "" || email == "" || password == "" {
+		s.renderLoginFormError(w, r, http.StatusBadRequest, orgSlug, email, "Enter your organization slug, email, and password.")
+		return
+	}
+
+	token, err := s.client.Login(r.Context(), orgSlug, email, password)
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		s.renderLoginFormError(w, r, http.StatusUnauthorized, orgSlug, email, "Invalid organization, email, or password.")
+		return
+	case err != nil:
+		s.logger.ErrorContext(r.Context(), "admin-ui: password login failed", slog.Any("error", err))
+		s.renderLoginFormError(w, r, http.StatusBadGateway, orgSlug, email, "Could not sign in: "+readableError(err))
+		return
+	}
+
+	s.setSessionCookie(w, token)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// renderLoginFormError re-renders the login page with a message after a failed
+// password sign-in, preserving the submitted org slug and email and reflecting
+// whether the SSO button should be shown.
+func (s *Server) renderLoginFormError(w http.ResponseWriter, r *http.Request, status int, orgSlug, email, msg string) {
+	s.render(w, r, status, views.Login(views.LoginData{
+		OIDC:    s.oidc != nil,
+		OrgSlug: orgSlug,
+		Email:   email,
+		Error:   msg,
+	}))
+}
+
+// handleTokenLogin is the paste-a-token dev fallback (the collapsed "Developer
+// sign-in" section): it reads a control-plane session token from the form,
+// stores it in the session cookie, and redirects to the dashboard. An empty
+// token re-renders the login page with an error and a 400. It stays available so
+// local development works without an identity provider.
+func (s *Server) handleTokenLogin(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		s.render(w, r, http.StatusBadRequest, views.Login(views.LoginData{OIDC: s.oidc != nil, Error: "Could not read the submitted form."}))
 		return
 	}
 	token := strings.TrimSpace(r.PostFormValue("token"))
 	if token == "" {
-		s.render(w, r, http.StatusBadRequest, views.Login(views.LoginData{Error: "A session token is required."}))
+		s.render(w, r, http.StatusBadRequest, views.Login(views.LoginData{OIDC: s.oidc != nil, Error: "A session token is required."}))
 		return
 	}
 

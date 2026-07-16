@@ -10,6 +10,7 @@ templ Agents(data AgentsData) {
 		@uikit.PageHeader(uikit.PageHeaderConfig{
 			Title:       "Agents",
 			Description: "The catalog of governed agents in your organization.",
+			Action:      agentsHeaderAction(data),
 		})
 		@uikit.Card(uikit.CardConfig{}) {
 			if data.Error != "" {
@@ -190,4 +191,15 @@ templ agentDetailActions(data AgentDetailData) {
 // for the read-only detail cards. The value is the component's children.
 templ detailRow(label string) {
 	<p><span class="uk-muted">{ label }: </span>{ children... }</p>
+}
+
+// agentsHeaderAction renders the New-agent button on the catalog list, but only
+// for callers who may manage agents (agents.manage); otherwise it renders
+// nothing.
+templ agentsHeaderAction(data AgentsData) {
+	if data.CanManage {
+		@uikit.ButtonLink(uikit.ButtonLinkConfig{Variant: uikit.ButtonPrimary, Href: "/agents/new"}) {
+			New agent
+		}
+	}
 }

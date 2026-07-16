@@ -72,8 +72,13 @@ summary, not a JWT-claims dump).
   responses map to `*APIError`. Read helpers: `Whoami`, `ListAgents`,
   `ListSessions`, `QuerySpend`, `ListBudgets`, `ListApprovals`,
   `GetSessionTrajectory`. Write helpers: `DecideApproval`
-  (`POST /approvals/{id}/decision`), `ExchangeSession` (`POST /auth/session`,
-  unauthenticated — trades the OIDC ID token for a session JWT), and
+  (`POST /approvals/{id}/decision`); the local-auth helpers `Signup`
+  (`POST /auth/signup`), `Login` (`POST /auth/login`), and `AcceptInvite`
+  (`POST /auth/accept-invite`), all public and returning a session token;
+  `InviteMember` (`POST /members/invite`); the agent-authoring helpers
+  `CreateAgent` (`POST /agents`) and `PublishAgentVersion`
+  (`POST /agents/{id}/versions`); `ExchangeSession` (`POST /auth/session`,
+  unauthenticated — trades the OIDC ID token for a session JWT); and
   `ApproveDevice` (`POST /auth/device/approve` — approves/denies a CLI device
   request with the member's Bearer token).
 - **`server.go`** — a `chi` router and the request handlers. It also builds the
@@ -83,11 +88,21 @@ summary, not a JWT-claims dump).
   names, relative times, and status. Routes:
   - `GET /healthz` — static liveness probe.
   - `GET /uikit/*` — the embedded uikit stylesheet and theme script.
-  - `GET /login` — with OIDC configured, redirect to the IdP authorize URL
-    (state + PKCE stored in transient cookies); otherwise render the
-    paste-a-token dev form.
-  - `POST /login` — the dev fallback: store the pasted token in the session
-    cookie, redirect to `/`.
+  - `GET /login` — render the sign-in page: the **primary local password form**
+    (org slug + email + password), a "Sign in with SSO" button when OIDC is
+    configured, and a collapsed "Developer sign-in" paste-a-token section.
+  - `POST /login` — the primary local sign-in: exchange org slug + email +
+    password for a session token via `POST /auth/login`, store it in the cookie,
+    redirect to `/`. Invalid credentials re-render the form with a message.
+  - `POST /login/token` — the paste-a-token dev fallback: store the pasted token
+    in the session cookie, redirect to `/`.
+  - `GET /login/sso` — start the OIDC browser flow (redirect to the IdP authorize
+    URL, state + PKCE in transient cookies); returns to `/login` without OIDC.
+  - `GET /signup` + `POST /signup` — "Create your organization": create an org
+    and its Owner (`POST /auth/signup`), set the session cookie, land on `/`.
+  - `GET /accept-invite?token=…` + `POST /accept-invite` — the invitee page:
+    redeem an invite token with a name + password (`POST /auth/accept-invite`),
+    set the session cookie, land in the app.
   - `GET /callback` — the OIDC redirect target: validate state, exchange the
     code, POST the ID token to `/auth/session`, store the returned session JWT
     in the cookie, land on the dashboard.
@@ -102,6 +117,12 @@ summary, not a JWT-claims dump).
   - `GET /approvals` — the Approvals inbox.
   - `POST /approvals/{id}/decision` — the HTMX approve/deny action; the handler
     calls `DecideApproval` and re-renders just the affected row.
+  - `POST /members/invite` — invite a member (email + roles) via
+    `POST /members/invite` (requires `members.manage`); re-render Members with the
+    returned invite link surfaced to copy (no mailer in local dev).
+  - `GET /agents/new` + `POST /agents` — the create-agent form (requires
+    `agents.manage`): `POST /agents` then `POST /agents/{id}/versions` to publish
+    version 1, then land on the agent detail page.
   - `GET /device?user_code=…` — the CLI device-approval confirmation page
     (behind auth).
   - `POST /device` — record the approve/deny decision via `ApproveDevice`.
@@ -152,11 +173,34 @@ readable inline message, never a blank page.
 
 ## Auth
 
-### OIDC authorization-code flow (default)
+### Local password sign-in (primary, ADR-0008)
 
-When OIDC is configured, sign-in is the standard browser flow:
+The primary sign-in is a local email + password login scoped to an organization,
+so a fresh install works without an identity provider:
 
-1. `GET /login` mints a CSRF **state** token and a **PKCE** verifier (storing
+- **Sign up** — `GET /signup` collects the org name/slug and the owner's email,
+  name, and password. `POST /signup` calls the control plane's
+  `POST /auth/signup`, which creates the org, seeds its built-in roles, makes the
+  caller its **Owner**, and returns a session JWT. The UI stores the JWT in the
+  `dd_session` cookie and lands on the Overview.
+- **Log in** — `GET /login` renders the org slug + email + password form.
+  `POST /login` calls `POST /auth/login`; every failure is the same generic 401,
+  re-rendered as an invalid-credentials message (the org slug and email are
+  preserved).
+- **Accept an invite** — a member invited via `POST /members/invite` receives an
+  accept-invite link. `GET /accept-invite?token=…` collects a name + password and
+  `POST /accept-invite` calls `POST /auth/accept-invite`, which activates the
+  pending member and returns a session JWT.
+
+All three mint the same session JWT as OIDC — same claims, TTL, and cookie — so
+the rest of the app is unaware of how the member signed in.
+
+### OIDC authorization-code flow (optional)
+
+When OIDC is configured the login page shows a **"Sign in with SSO"** button that
+links to `GET /login/sso`, which starts the standard browser flow:
+
+1. `GET /login/sso` mints a CSRF **state** token and a **PKCE** verifier (storing
    both in short-lived, HttpOnly cookies) and redirects to the IdP's authorize
    URL with an S256 code challenge.
 2. The IdP authenticates the member and redirects back to
@@ -177,11 +221,12 @@ for plain-HTTP local dev.
 
 ### Paste-a-token dev fallback
 
-If the OIDC environment is **unset** (see Configuration), the browser flow is
-disabled and `GET /login` renders the paste-a-token form instead: the operator
-obtains a control-plane session token out-of-band — e.g. `drun-dash login` or a
-direct `POST /auth/session` — and pastes it. This keeps local development
-working without an identity provider. The cookie/session model is identical.
+The login page always keeps a collapsed **"Developer sign-in"** section: the
+operator obtains a control-plane session token out-of-band — e.g. `drun-dash
+login` or a direct `POST /auth/session` — pastes it, and `POST /login/token`
+stores it in the `dd_session` cookie. This keeps token-based local development
+working regardless of whether OIDC is configured. The cookie/session model is
+identical.
 
 ## Configuration
 

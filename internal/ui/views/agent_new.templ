@@ -1,0 +1,69 @@
+package views
+
+import "github.com/Domene99/drun-dash/internal/uikit"
+
+// AgentNew renders the create-agent form (/agents/new). It registers the agent
+// (POST /agents) and publishes its first immutable version (POST
+// /agents/{id}/versions) in one submit. Creating agents requires agents.manage;
+// without it the form is replaced with a permission notice. A note reminds the
+// operator that running the agent also needs a pinned model endpoint. Field
+// values echo back on a failed submit.
+templ AgentNew(data AgentNewData) {
+	@Page(data.Chrome) {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       "New agent",
+			Description: "Register an agent and publish its first version.",
+		})
+		if data.NoAccess {
+			@uikit.Card(uikit.CardConfig{}) {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantWarning, Title: "No access"}) {
+					Creating agents requires the agents.manage permission, which your account does not have.
+				}
+			}
+		} else {
+			@uikit.Card(uikit.CardConfig{}) {
+				if data.Error != "" {
+					@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+						{ data.Error }
+					}
+				}
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantInfo, Title: "Before it can run"}) {
+					Creating an agent here registers it and publishes version 1. To actually run it you must also pin a model endpoint to the version (endpoint management ships in a later batch).
+				}
+				<form method="post" action="/agents">
+					@uikit.Field(uikit.FieldConfig{Label: "Name", For: "agent-name", Required: true}) {
+						@uikit.Input(uikit.InputConfig{ID: "agent-name", Name: "name", Value: data.Name, Placeholder: "e.g. Release Bot", Attrs: templ.Attributes{"required": true, "autofocus": true}})
+					}
+					@uikit.Field(uikit.FieldConfig{Label: "Description", For: "agent-description"}) {
+						@uikit.Textarea(uikit.TextareaConfig{ID: "agent-description", Name: "description", Value: data.Description, Rows: 2, Placeholder: "What this agent does."})
+					}
+					@uikit.Field(uikit.FieldConfig{Label: "System prompt", For: "agent-system-prompt", Required: true, Help: "Anchors the agent's behaviour. The core of the version 1 manifest."}) {
+						@uikit.Textarea(uikit.TextareaConfig{ID: "agent-system-prompt", Name: "system_prompt", Value: data.SystemPrompt, Rows: 6, Placeholder: "You are ...", Attrs: templ.Attributes{"required": true}})
+					}
+					@uikit.Field(uikit.FieldConfig{Label: "Allowed tools", For: "agent-allowed-tools", Help: "Tool identifiers the agent may invoke, one per line or comma-separated. Leave empty to grant no tools."}) {
+						@uikit.Textarea(uikit.TextareaConfig{ID: "agent-allowed-tools", Name: "allowed_tools", Value: data.AllowedTools, Rows: 3, Placeholder: "search\nfetch"})
+					}
+					@uikit.Field(uikit.FieldConfig{Label: "Fan-out ceiling", For: "agent-fan-out", Help: "Maximum concurrent sub-agents a session on this version may launch. 0 disables fan-out."}) {
+						@uikit.Input(uikit.InputConfig{ID: "agent-fan-out", Name: "fan_out_ceiling", Type: "number", Value: data.FanOutCeiling, Attrs: templ.Attributes{"min": "0", "step": "1"}})
+					}
+					@uikit.Field(uikit.FieldConfig{Label: "Default policy", For: "agent-policy", Help: "Optional. The policy boundary sessions for this agent run under."}) {
+						@uikit.Select(uikit.SelectConfig{ID: "agent-policy", Name: "default_policy_id"}) {
+							<option value="">No policy</option>
+							for _, p := range data.Policies {
+								<option value={ p.ID }>{ p.Name }</option>
+							}
+						}
+					}
+					<div class="uk-row-actions">
+						@uikit.ButtonLink(uikit.ButtonLinkConfig{Variant: uikit.ButtonSecondary, Href: "/agents"}) {
+							Cancel
+						}
+						@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
+							Create agent
+						}
+					</div>
+				</form>
+			}
+		}
+	}
+}

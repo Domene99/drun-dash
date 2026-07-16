@@ -137,7 +137,7 @@ func TestRenderLoginAndDeviceUseMinimalShell(t *testing.T) {
 	}
 
 	oidc := render(t, Login(LoginData{OIDC: true}))
-	mustContain(t, oidc, "identity provider", `href="/login"`)
+	mustContain(t, oidc, "Sign in with SSO", `href="/login/sso"`)
 
 	device := render(t, Device(DeviceData{UserCode: "WXYZ-1234"}))
 	mustContain(t, device, "Approve device login", "WXYZ-1234", "Approve", "Deny")

@@ -81,7 +81,7 @@ func TestLoginRedirectsToIdPWhenOIDCConfigured(t *testing.T) {
 	idp := mockIdP(t)
 	s := newOIDCServer(t, idp, "http://control-plane.invalid")
 
-	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req := httptest.NewRequest(http.MethodGet, "/login/sso", nil)
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 
@@ -152,7 +152,7 @@ func TestOIDCCallbackExchangesAndSetsSessionCookie(t *testing.T) {
 
 	// Step 1: begin login to obtain a valid state + verifier cookie pair.
 	loginRec := httptest.NewRecorder()
-	s.ServeHTTP(loginRec, httptest.NewRequest(http.MethodGet, "/login", nil))
+	s.ServeHTTP(loginRec, httptest.NewRequest(http.MethodGet, "/login/sso", nil))
 	stateCookie := cookieByName(loginRec.Result().Cookies(), oidcStateCookie)
 	verifierCookie := cookieByName(loginRec.Result().Cookies(), oidcVerifierCookie)
 	if stateCookie == nil || verifierCookie == nil {
@@ -197,7 +197,7 @@ func TestOIDCCallbackStateMismatchRendersError(t *testing.T) {
 	s := newOIDCServer(t, idp, "http://control-plane.invalid")
 
 	loginRec := httptest.NewRecorder()
-	s.ServeHTTP(loginRec, httptest.NewRequest(http.MethodGet, "/login", nil))
+	s.ServeHTTP(loginRec, httptest.NewRequest(http.MethodGet, "/login/sso", nil))
 	stateCookie := cookieByName(loginRec.Result().Cookies(), oidcStateCookie)
 	verifierCookie := cookieByName(loginRec.Result().Cookies(), oidcVerifierCookie)
 

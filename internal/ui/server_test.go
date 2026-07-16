@@ -201,7 +201,7 @@ func TestLoginSetsCookieAndRedirects(t *testing.T) {
 	s := newServer(t, "http://control-plane.invalid")
 
 	form := strings.NewReader("token=abc.def")
-	req := httptest.NewRequest(http.MethodPost, "/login", form)
+	req := httptest.NewRequest(http.MethodPost, "/login/token", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
@@ -233,7 +233,7 @@ func TestLoginSetsCookieAndRedirects(t *testing.T) {
 func TestLoginEmptyTokenRejected(t *testing.T) {
 	s := newServer(t, "http://control-plane.invalid")
 
-	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("token=+"))
+	req := httptest.NewRequest(http.MethodPost, "/login/token", strings.NewReader("token=+"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)

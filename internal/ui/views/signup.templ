@@ -1,0 +1,52 @@
+package views
+
+import "github.com/Domene99/drun-dash/internal/uikit"
+
+// Signup renders the "Create your organization" page in the sidebar-less
+// [Minimal] shell (ADR-0008 §4). It collects the org name/slug and the owner's
+// email, name, and password (with confirmation); on success internal/ui stores
+// the returned session token and lands on the Overview, making the caller the
+// org's Owner. The submitted values echo back on a failed attempt.
+templ Signup(data SignupData) {
+	@Minimal("Create your organization") {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       "Create your organization",
+			Description: "Set up a new drun-dash organization. You become its owner.",
+		})
+		@uikit.Card(uikit.CardConfig{}) {
+			if data.Error != "" {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+					{ data.Error }
+				}
+			}
+			<form method="post" action="/signup">
+				@uikit.Field(uikit.FieldConfig{Label: "Organization name", For: "signup-org-name", Required: true}) {
+					@uikit.Input(uikit.InputConfig{ID: "signup-org-name", Name: "org_name", Value: data.OrgName, Placeholder: "Acme, Inc.", Attrs: templ.Attributes{"required": true, "autofocus": true}})
+				}
+				@uikit.Field(uikit.FieldConfig{Label: "Organization slug", For: "signup-org-slug", Help: "Used to sign in. Lower-case letters, numbers, and hyphens. Leave blank to derive it from the name."}) {
+					@uikit.Input(uikit.InputConfig{ID: "signup-org-slug", Name: "org_slug", Value: data.OrgSlug, Placeholder: "acme"})
+				}
+				@uikit.Field(uikit.FieldConfig{Label: "Your email", For: "signup-email", Required: true}) {
+					@uikit.Input(uikit.InputConfig{ID: "signup-email", Name: "email", Type: "email", Value: data.Email, Placeholder: "you@example.com", Attrs: templ.Attributes{"required": true}})
+				}
+				@uikit.Field(uikit.FieldConfig{Label: "Your name", For: "signup-name"}) {
+					@uikit.Input(uikit.InputConfig{ID: "signup-name", Name: "name", Value: data.Name, Placeholder: "Ada Lovelace"})
+				}
+				@uikit.Field(uikit.FieldConfig{Label: "Password", For: "signup-password", Required: true, Help: "At least 8 characters."}) {
+					@uikit.Input(uikit.InputConfig{ID: "signup-password", Name: "password", Type: "password", Attrs: templ.Attributes{"required": true, "minlength": "8"}})
+				}
+				@uikit.Field(uikit.FieldConfig{Label: "Confirm password", For: "signup-password-confirm", Required: true}) {
+					@uikit.Input(uikit.InputConfig{ID: "signup-password-confirm", Name: "password_confirm", Type: "password", Attrs: templ.Attributes{"required": true}})
+				}
+				<div class="uk-row-actions">
+					@uikit.ButtonLink(uikit.ButtonLinkConfig{Variant: uikit.ButtonGhost, Href: "/login"}) {
+						Back to sign in
+					}
+					@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
+						Create organization
+					}
+				</div>
+			</form>
+		}
+	}
+}

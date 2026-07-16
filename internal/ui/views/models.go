@@ -179,13 +179,17 @@ type TrajectoryRow struct {
 	Indent     string
 }
 
-// LoginData is the view model for the login page. Error, when non-empty, holds
-// a human-readable message explaining why a prior sign-in attempt failed. OIDC
-// selects the page's mode: when true the page offers the identity-provider
-// button; when false it renders the paste-a-token dev form.
+// LoginData is the view model for the login page. The primary form is the local
+// password sign-in (org slug + email + password); Error, when non-empty, holds a
+// human-readable message explaining why a prior attempt failed, and OrgSlug/Email
+// echo the submitted values back so the operator does not retype them. OIDC adds
+// a "Sign in with SSO" button when the browser flow is configured; a collapsed
+// developer section keeps the paste-a-token dev login available regardless.
 type LoginData struct {
-	Error string
-	OIDC  bool
+	Error   string
+	OIDC    bool
+	OrgSlug string
+	Email   string
 }
 
 // DeviceData is the view model for the CLI device-approval page. UserCode is the

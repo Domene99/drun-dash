@@ -1,0 +1,45 @@
+package views
+
+import "github.com/Domene99/drun-dash/internal/uikit"
+
+// AcceptInvite renders the invitee page in the sidebar-less [Minimal] shell
+// (ADR-0008 §6). It carries the raw invite token through as a hidden field and
+// collects the acceptor's name and password; on success internal/ui stores the
+// returned session token and lands them in the app. A missing token renders a
+// notice instead of the form.
+templ AcceptInvite(data AcceptInviteData) {
+	@Minimal("Accept your invitation") {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       "Accept your invitation",
+			Description: "Set a password to join the organization you were invited to.",
+		})
+		@uikit.Card(uikit.CardConfig{}) {
+			if data.Error != "" {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+					{ data.Error }
+				}
+			}
+			if data.Token == "" {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantWarning, Title: "Missing invite token"}) {
+					This invitation link is missing its token. Ask your administrator for a new invite link.
+				}
+			} else {
+				<form method="post" action="/accept-invite">
+					<input type="hidden" name="token" value={ data.Token }/>
+					@uikit.Field(uikit.FieldConfig{Label: "Your name", For: "accept-name"}) {
+						@uikit.Input(uikit.InputConfig{ID: "accept-name", Name: "name", Value: data.Name, Placeholder: "Ada Lovelace", Attrs: templ.Attributes{"autofocus": true}})
+					}
+					@uikit.Field(uikit.FieldConfig{Label: "Password", For: "accept-password", Required: true, Help: "At least 8 characters."}) {
+						@uikit.Input(uikit.InputConfig{ID: "accept-password", Name: "password", Type: "password", Attrs: templ.Attributes{"required": true, "minlength": "8"}})
+					}
+					@uikit.Field(uikit.FieldConfig{Label: "Confirm password", For: "accept-password-confirm", Required: true}) {
+						@uikit.Input(uikit.InputConfig{ID: "accept-password-confirm", Name: "password_confirm", Type: "password", Attrs: templ.Attributes{"required": true}})
+					}
+					@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
+						Join organization
+					}
+				</form>
+			}
+		}
+	}
+}
