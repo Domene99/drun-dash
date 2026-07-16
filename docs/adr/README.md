@@ -32,3 +32,4 @@ time, so that later work streams stay consistent without re-litigating it.
 | [0006](0006-rbac-and-access-model.md) | RBAC and access model (roles, custom roles, permissions) | Proposed |
 | [0007](0007-member-standalone-desktop-app.md) | Member standalone desktop app | Proposed |
 | [0008](0008-local-authentication.md) | Local authentication (email/password, org self-signup, member invitations) | Proposed |
+| [0009](0009-writable-secret-vault.md) | Writable, encrypted-at-rest secret vault (model-endpoint keys) | Accepted |

@@ -71,6 +71,10 @@ tags:
   - name: Members
     description: >-
       Organization members and their role assignments.
+  - name: ModelEndpoints
+    description: >-
+      Upstream LLM endpoints and the encrypted provider keys the proxy injects
+      (ADR-0009). Keys are write-only: a stored key is never returned.
 
 security:
   - bearerAuth: []
@@ -1105,6 +1109,129 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
+  # -------------------------------------------------------- ModelEndpoints ---
+  /model-endpoints:
+    get:
+      tags: [ModelEndpoints]
+      operationId: listModelEndpoints
+      summary: List model endpoints
+      description: >-
+        List the calling organization's registered upstream LLM endpoints.
+        Visible to any authenticated member. The provider key is never
+        returned; secret_set reports only whether one is configured.
+      responses:
+        '200':
+          description: The organization's model endpoints.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelEndpointList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [ModelEndpoints]
+      operationId: createModelEndpoint
+      summary: Register a model endpoint
+      description: >-
+        Register an upstream LLM endpoint. Requires endpoints.manage. When
+        api_key is supplied it is sealed into the encrypted vault
+        (AES-256-GCM) and never returned; when omitted the endpoint is created
+        with no key (secret_set=false). A duplicate (org, name) is a 409; an
+        api_key supplied while the vault master key (DRUNDASH_VAULT_KEY) is
+        unset is a 400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EndpointCreate'
+      responses:
+        '201':
+          description: Endpoint created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /model-endpoints/{endpointId}:
+    parameters:
+      - $ref: '#/components/parameters/EndpointId'
+    get:
+      tags: [ModelEndpoints]
+      operationId: getModelEndpoint
+      summary: Get a model endpoint
+      description: >-
+        Fetch a single model endpoint by ID. Visible to any authenticated
+        member of the owning organization. The key is never returned.
+      responses:
+        '200':
+          description: The model endpoint.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelEndpoint'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [ModelEndpoints]
+      operationId: updateModelEndpoint
+      summary: Update a model endpoint
+      description: >-
+        Update mutable fields of a model endpoint. Requires endpoints.manage. A
+        non-empty api_key rotates the sealed key in place; active toggles the
+        endpoint. The key is never returned. A rename colliding with another
+        (org, name) is a 409; an api_key supplied while DRUNDASH_VAULT_KEY is
+        unset is a 400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EndpointUpdate'
+      responses:
+        '200':
+          description: Endpoint updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [ModelEndpoints]
+      operationId: deleteModelEndpoint
+      summary: Delete a model endpoint
+      description: >-
+        Remove a model endpoint and its backing sealed secret. Requires
+        endpoints.manage.
+      responses:
+        '204':
+          description: Endpoint deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1191,6 +1318,13 @@ components:
       in: path
       required: true
       description: Member identifier.
+      schema:
+        $ref: '#/components/schemas/Id'
+    EndpointId:
+      name: endpointId
+      in: path
+      required: true
+      description: Model endpoint identifier.
       schema:
         $ref: '#/components/schemas/Id'
 
@@ -1455,6 +1589,85 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/Agent'
+
+    ModelEndpoint:
+      type: object
+      description: >-
+        A registered upstream LLM endpoint. The provider key is never included;
+        secret_set reports whether one is configured.
+      required: [id, org_id, name, provider, base_url, active, secret_set, created_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        org_id:
+          $ref: '#/components/schemas/Id'
+        name:
+          type: string
+          description: Human-friendly endpoint name, unique within the organization.
+        provider:
+          type: string
+          description: Upstream provider identifier (e.g. anthropic, openai).
+        base_url:
+          type: string
+          description: Base URL of the upstream endpoint.
+        active:
+          type: boolean
+          description: Whether the endpoint is eligible for routing.
+        secret_set:
+          type: boolean
+          description: True when a provider key is configured for this endpoint.
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    ModelEndpointList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelEndpoint'
+
+    EndpointCreate:
+      type: object
+      required: [name, provider, base_url]
+      properties:
+        name:
+          type: string
+          description: Human-friendly endpoint name, unique within the organization.
+        provider:
+          type: string
+          description: Upstream provider identifier (e.g. anthropic, openai).
+        base_url:
+          type: string
+          description: Base URL of the upstream endpoint.
+        api_key:
+          type: string
+          description: >-
+            Provider API key. Write-only: sealed into the encrypted vault and
+            never returned. Omit to create an endpoint with no key yet.
+
+    EndpointUpdate:
+      type: object
+      description: Mutable model-endpoint fields; all optional.
+      properties:
+        name:
+          type: string
+          description: Human-friendly endpoint name.
+        provider:
+          type: string
+          description: Upstream provider identifier.
+        base_url:
+          type: string
+          description: Base URL of the upstream endpoint.
+        api_key:
+          type: string
+          description: >-
+            New provider API key. Write-only: a non-empty value rotates the
+            sealed key in place; never returned.
+        active:
+          type: boolean
+          description: Enable or disable the endpoint for routing.
 
     AgentVersion:
       type: object

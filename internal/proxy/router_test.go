@@ -15,7 +15,7 @@ import (
 // exercise the broker route should set LLM_UPSTREAM_BASE_URL (via t.Setenv)
 // before calling this, since the upstream is read once at construction.
 func testRouter() http.Handler {
-	return NewRouter(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	return NewRouter(slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
 }
 
 func TestHealthz(t *testing.T) {

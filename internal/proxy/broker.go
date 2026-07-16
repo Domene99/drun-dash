@@ -130,17 +130,25 @@ type storeQuerier = store.Querier
 //
 // The stores are built over pool so the per-call path (grant lookup, session
 // load, endpoint resolve, budget check, usage append) runs against the real
-// database. The upstream credential is brokered through the EnvVault development
-// backend: the secret_ref comes from the grant's endpoint and is resolved per
-// request in forward, so the credential is never cached in the process and
-// honors rotation.
-func newBroker(logger *slog.Logger, pool storeQuerier) *broker {
+// database. The upstream credential is brokered through the injected vault v
+// (a CompositeVault in production, resolving both vault://db/* and vault://dev/*
+// refs; nil falls back to EnvVault): the secret_ref comes from the grant's
+// endpoint and is resolved per request in forward, so the credential is never
+// cached in the process and honors rotation.
+func newBroker(logger *slog.Logger, pool storeQuerier, v vault.Vault) *broker {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// A nil vault preserves the historical default: resolve dev-backed
+	// (vault://dev/*) credentials through the EnvVault. cmd/llm-proxy injects a
+	// CompositeVault so db-backed (vault://db/*) keys sealed by the control
+	// plane resolve here too.
+	if v == nil {
+		v = vault.NewEnvVault()
+	}
 	b := &broker{
 		logger:    logger,
-		vault:     vault.NewEnvVault(),
+		vault:     v,
 		grants:    store.NewCredentialGrantStore(pool),
 		sessions:  store.NewSessionStore(pool),
 		endpoints: store.NewModelEndpointStore(pool),

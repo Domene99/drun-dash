@@ -848,7 +848,7 @@ func TestBrokerUpstreamErrorIs502(t *testing.T) {
 // broker route reports 502 upstream_unconfigured instead of forwarding.
 func TestBrokerUnconfiguredIs502(t *testing.T) {
 	t.Setenv(envUpstreamBaseURL, "") // empty == unset
-	b := newBroker(testLogger(), nil)
+	b := newBroker(testLogger(), nil, nil)
 	if b.upstream != nil {
 		t.Fatal("expected nil upstream when unconfigured")
 	}
@@ -867,7 +867,7 @@ func TestBrokerUnconfiguredIs502(t *testing.T) {
 // construction and surfaces as 502 upstream_unconfigured.
 func TestBrokerInvalidUpstreamIs502(t *testing.T) {
 	t.Setenv(envUpstreamBaseURL, "ftp://example.com") // unsupported scheme
-	b := newBroker(testLogger(), nil)
+	b := newBroker(testLogger(), nil, nil)
 	if b.upstream != nil {
 		t.Fatal("expected nil upstream for an invalid base URL")
 	}
@@ -886,7 +886,7 @@ func TestBrokerInvalidUpstreamIs502(t *testing.T) {
 // at construction.
 func TestBrokerConfiguredFromEnv(t *testing.T) {
 	t.Setenv(envUpstreamBaseURL, "https://api.openai.com")
-	b := newBroker(testLogger(), nil)
+	b := newBroker(testLogger(), nil, nil)
 	if b.upstream == nil {
 		t.Fatal("expected a configured upstream")
 	}

@@ -88,6 +88,14 @@ type Deps struct {
 	// expires_at and the credential grant's expires_at (ADR-0003 §4), so a
 	// session cannot outlive its policy or vice versa.
 	SessionTTL time.Duration
+
+	// Vault is the writable, encrypted secret backend the model-endpoint
+	// handlers seal provider keys into (ADR-0009). It is a vault.DBVault
+	// carrying the process-wide master key (DRUNDASH_VAULT_KEY); when the key is
+	// unset its Seal/Reseal return vault.ErrKeyNotConfigured, which the handler
+	// surfaces as a clear 400. Only the endpoint handlers use it, so tests
+	// exercising other verticals may leave it nil.
+	Vault secretVault
 }
 
 // Mount registers the control-plane REST routes on r. Public auth routes are
@@ -197,5 +205,15 @@ func Mount(r chi.Router, deps Deps) {
 		// listBudgets stays member-visible (ADR-0006 §6).
 		pr.With(deps.requirePermission(store.PermAuditView)).Get("/analytics/spend", deps.querySpend)
 		pr.Get("/analytics/budgets", deps.listBudgets)
+
+		// Model endpoints (ADR-0009). Reads are member-visible within the org;
+		// create/update/delete require endpoints.manage. A created or updated
+		// endpoint's api_key is sealed into the encrypted vault and never
+		// returned — only a secret_set boolean is exposed.
+		pr.Get("/model-endpoints", deps.listModelEndpoints)
+		pr.With(deps.requirePermission(store.PermEndpointsManage)).Post("/model-endpoints", deps.createModelEndpoint)
+		pr.Get("/model-endpoints/{endpointId}", deps.getModelEndpoint)
+		pr.With(deps.requirePermission(store.PermEndpointsManage)).Patch("/model-endpoints/{endpointId}", deps.updateModelEndpoint)
+		pr.With(deps.requirePermission(store.PermEndpointsManage)).Delete("/model-endpoints/{endpointId}", deps.deleteModelEndpoint)
 	})
 }
