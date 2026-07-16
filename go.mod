@@ -11,6 +11,7 @@ require (
 	github.com/jackc/pgx/v5 v5.6.0
 	github.com/redis/go-redis/v9 v9.7.0
 	github.com/webview/webview_go v0.0.0-20240831120633-6173450d4dd6
+	golang.org/x/crypto v0.27.0
 	golang.org/x/oauth2 v0.21.0
 )
 
@@ -25,7 +26,6 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a // indirect
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
 	go.uber.org/atomic v1.7.0 // indirect
-	golang.org/x/crypto v0.27.0 // indirect
 	golang.org/x/sync v0.8.0 // indirect
 	golang.org/x/text v0.18.0 // indirect
 )

@@ -189,6 +189,93 @@ paths:
         '501':
           $ref: '#/components/responses/NotImplemented'
 
+  /auth/signup:
+    post:
+      tags: [Auth]
+      operationId: signup
+      summary: Create an organization and its Owner
+      description: >-
+        Public, unauthenticated org self-signup (ADR-0008 §4). Creates the
+        organization, seeds its built-in roles, and creates the first member as
+        Owner with the supplied password, returning a session token — the caller
+        is immediately signed in. org_slug is derived from org_name when omitted.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+      responses:
+        '200':
+          description: Organization created; session issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Sign in with email and password
+      description: >-
+        Public email/password login (ADR-0008 §5). The org slug scopes the
+        lookup — email is unique per org, not globally. Every failure (unknown
+        org, unknown email, no password set, wrong password, inactive member)
+        returns the same generic 401 on a constant-time path, revealing nothing
+        about which orgs or members exist.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Session issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/accept-invite:
+    post:
+      tags: [Auth]
+      operationId: acceptInvite
+      summary: Accept a member invitation
+      description: >-
+        Public, unauthenticated (ADR-0008 §6). Redeems an invite token: sets the
+        pending member's name and password, activates them, assigns the
+        invitation's pre-selected roles (no self-escalation at acceptance),
+        consumes the single-use token, and returns a session token. An invalid,
+        expired, or already-consumed token is a single generic 401.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcceptInviteRequest'
+      responses:
+        '200':
+          description: Invitation accepted; session issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   # --------------------------------------------------------------- Agents ---
   /agents:
     get:
@@ -976,6 +1063,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Member'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /members/invite:
+    post:
+      tags: [Members]
+      operationId: inviteMember
+      summary: Invite a member by email
+      description: >-
+        Create a pending (inactive) member holding the given email and an
+        invitation carrying the pre-selected roles, then return the invite link
+        and raw token once (no mailer in v1 — the link is surfaced and logged,
+        ADR-0008 §6). Requires members.manage. A duplicate email is a 409; an
+        unknown or cross-org role_id is a 404.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberInviteRequest'
+      responses:
+        '201':
+          description: Invitation created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberInvitation'
         '400':
           $ref: '#/components/responses/BadRequest'
         '403':
@@ -2037,3 +2157,90 @@ components:
           description: The full set of role ids the member should hold directly.
           items:
             $ref: '#/components/schemas/Id'
+
+    SignupRequest:
+      type: object
+      required: [org_name, email, password]
+      properties:
+        org_name:
+          type: string
+          description: Human-readable organization name.
+        org_slug:
+          type: string
+          description: URL-safe org slug; derived from org_name when omitted.
+        email:
+          type: string
+          format: email
+          description: The owner's email (unique per org, case-insensitive).
+        name:
+          type: string
+          description: The owner's display name.
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 72
+          description: The owner's password (8..72 bytes; bcrypt-hashed server-side).
+
+    LoginRequest:
+      type: object
+      required: [org_slug, email, password]
+      properties:
+        org_slug:
+          type: string
+          description: Slug of the org to sign in to (scopes the email lookup).
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    AcceptInviteRequest:
+      type: object
+      required: [token, password]
+      properties:
+        token:
+          type: string
+          description: The raw, single-use invite token from the invitation link.
+        name:
+          type: string
+          description: The accepting member's display name.
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 72
+          description: The member's chosen password (8..72 bytes; bcrypt-hashed server-side).
+
+    MemberInviteRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+          description: Email to invite (must be free within the org).
+        role_ids:
+          type: array
+          description: Roles assigned to the member when they accept the invite.
+          items:
+            $ref: '#/components/schemas/Id'
+
+    MemberInvitation:
+      type: object
+      required: [member, invite_token, invite_link, expires_at]
+      properties:
+        member:
+          $ref: '#/components/schemas/Member'
+        invite_token:
+          type: string
+          description: >-
+            The raw, single-use invite token, returned once (only its hash is
+            stored). No mailer in v1, so the caller hands off the link below.
+        invite_link:
+          type: string
+          format: uri
+          description: The accept-invite URL to hand to the invitee.
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'

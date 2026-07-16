@@ -55,7 +55,9 @@ type Deps struct {
 	// Only the device handlers use it; tests inject an in-memory DeviceStore.
 	Redis DeviceStore
 	// AdminUIBaseURL is the admin UI origin used to build the device-flow
-	// verification_uri (<AdminUIBaseURL>/device) the CLI shows the user.
+	// verification_uri (<AdminUIBaseURL>/device) the CLI shows the user, and the
+	// accept-invite link (<AdminUIBaseURL>/accept-invite?token=…) returned by
+	// POST /members/invite (ADR-0008 §6).
 	AdminUIBaseURL string
 	// Pool is the shared database pool the resource handlers build their
 	// stores over (store.NewAgentStore(d.Pool), …). It is set once by
@@ -112,6 +114,14 @@ func Mount(r chi.Router, deps Deps) {
 	// returns 501; it stays mounted regardless.
 	r.Post("/auth/session", deps.exchangeOidcSession)
 
+	// Local email/password auth (ADR-0008), all unauthenticated: signup creates
+	// an org and its Owner, login trades (org_slug, email, password) for a
+	// token, and accept-invite redeems an invitation. Each mints the same
+	// session JWT as the OIDC exchange, so everything downstream is unchanged.
+	r.Post("/auth/signup", deps.signup)
+	r.Post("/auth/login", deps.login)
+	r.Post("/auth/accept-invite", deps.acceptInvite)
+
 	// The device-authorization flow's public endpoints (RFC 8628): the CLI has
 	// no Bearer token yet, so both the code request and the token poll are
 	// unauthenticated. Approval (below) is the one step that requires a member.
@@ -156,14 +166,15 @@ func Mount(r chi.Router, deps Deps) {
 		pr.With(deps.requirePermission(store.PermPoliciesManage)).Post("/policies/{policyId}/versions", deps.publishPolicyVersion)
 
 		// Roles and members (ADR-0006 §7). Defining a role is roles.manage;
-		// assigning roles to a member is members.manage; the member roster is
-		// visible to members.manage OR audit.view.
+		// assigning roles to a member and inviting members is members.manage;
+		// the member roster is visible to members.manage OR audit.view.
 		pr.With(deps.requirePermission(store.PermRolesManage)).Get("/roles", deps.listRoles)
 		pr.With(deps.requirePermission(store.PermRolesManage)).Post("/roles", deps.createRole)
 		pr.With(deps.requirePermission(store.PermRolesManage)).Get("/roles/{roleId}", deps.getRole)
 		pr.With(deps.requirePermission(store.PermRolesManage)).Patch("/roles/{roleId}", deps.updateRole)
 		pr.With(deps.requirePermission(store.PermRolesManage)).Delete("/roles/{roleId}", deps.deleteRole)
 		pr.With(deps.requireAnyPermission(store.PermMembersManage, store.PermAuditView)).Get("/members", deps.listMembers)
+		pr.With(deps.requirePermission(store.PermMembersManage)).Post("/members/invite", deps.inviteMember)
 		pr.With(deps.requirePermission(store.PermMembersManage)).Put("/members/{memberId}/roles", deps.updateMemberRoles)
 
 		// Sessions. Launch is agent-scoped (agents.run + agent access, checked

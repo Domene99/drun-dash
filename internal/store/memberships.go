@@ -49,7 +49,7 @@ func (s *TeamMembershipStore) Remove(ctx context.Context, teamID, memberID strin
 // ListMembers returns every member of teamID, ordered by email. Members not on
 // the team are excluded; an empty result is not an error.
 func (s *TeamMembershipStore) ListMembers(ctx context.Context, teamID string) ([]Member, error) {
-	const q = `SELECT m.id, m.org_id, m.idp_subject, m.email, m.display_name, m.role, m.active, m.created_at
+	const q = `SELECT m.id, m.org_id, m.idp_subject, m.email, m.display_name, m.role, m.active, m.created_at, m.password_hash
 		FROM members m
 		JOIN team_memberships tm ON tm.member_id = m.id
 		WHERE tm.team_id = $1
