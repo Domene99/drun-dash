@@ -66,16 +66,16 @@ func TestMapErrorConflictNamesConstraint(t *testing.T) {
 }
 
 func TestRoleValid(t *testing.T) {
-	valid := []Role{RoleAdmin, RoleMember, RoleAuditor}
+	valid := []MemberRole{RoleAdmin, RoleMember, RoleAuditor}
 	for _, r := range valid {
 		if !r.Valid() {
-			t.Errorf("Role(%q).Valid() = false, want true", r)
+			t.Errorf("MemberRole(%q).Valid() = false, want true", r)
 		}
 	}
-	invalid := []Role{"", "owner", "Admin", "MEMBER"}
+	invalid := []MemberRole{"", "owner", "Admin", "MEMBER"}
 	for _, r := range invalid {
 		if r.Valid() {
-			t.Errorf("Role(%q).Valid() = true, want false", r)
+			t.Errorf("MemberRole(%q).Valid() = true, want false", r)
 		}
 	}
 }
