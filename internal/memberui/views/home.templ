@@ -24,12 +24,16 @@ templ Home(data HomeData) {
 					Message: "No agents are available to you yet. Ask an admin to grant you access.",
 				})
 			} else {
+				<p class="uk-muted mc-workdir-help">
+					Working directory: the folder the agent works in. It's mounted into the sandbox; changes only reach these files when you review the diff and click Commit. Leave blank for a scratch sandbox.
+				</p>
 				@uikit.Table() {
 					<thead>
 						<tr>
 							<th>Agent</th>
 							<th class="uk-num">Version</th>
 							<th>Description</th>
+							<th>Working directory</th>
 							<th></th>
 						</tr>
 					</thead>
@@ -39,10 +43,21 @@ templ Home(data HomeData) {
 								<td>{ a.Name }</td>
 								<td class="uk-num">{ a.Version }</td>
 								<td class="uk-muted">{ a.Description }</td>
-								<td class="uk-row-actions">
-									<form hx-post="/sessions" hx-target="#sessions" hx-swap="outerHTML">
+								<td colspan="2">
+									<form class="mc-launch" hx-post="/sessions" hx-target="#sessions" hx-swap="outerHTML">
 										<input type="hidden" name="agent_id" value={ a.ID }/>
 										<input type="hidden" name="agent_name" value={ a.Name }/>
+										<input
+											type="text"
+											name="working_dir"
+											class="uk-input uk-input--sm mc-workdir-input"
+											placeholder="/Users/you/project (optional)"
+											title="The folder the agent works in. It's mounted into the sandbox; changes only reach these files when you review the diff and click Commit. Leave blank for a scratch sandbox."
+											autocapitalize="off"
+											autocorrect="off"
+											autocomplete="off"
+											spellcheck="false"
+										/>
 										@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit", Small: true}) {
 											Start chat
 										}

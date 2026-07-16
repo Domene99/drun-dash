@@ -26,6 +26,8 @@ import (
 // facts (never the proxy token), the resolved model, and the bound drun engine's
 // state. When the engine could not be bound EngineError explains why and the
 // chat input is withheld — fail-closed, no ungoverned run (ADR-0004 §3/§4).
+// WorkingDir is the mounted host working directory (issue #296) — where Commit
+// writes back — or empty for a scratch sandbox.
 type RunData struct {
 	SessionID    string
 	Agent        string
@@ -34,6 +36,7 @@ type RunData struct {
 	FanOut       string
 	Expires      string
 	Model        string
+	WorkingDir   string
 
 	EngineReady  bool
 	EngineError  string
@@ -154,6 +157,17 @@ func runTitle(data RunData) string {
 	return orDashStr(data.Agent)
 }
 
+// workingDirLabel renders where the agent's committed changes land: the mounted
+// host working directory as a monospaced path, or a plain note that the session
+// is a scratch sandbox with no host folder (issue #296). It returns HTML for the
+// run view's string builder, so the path is escaped.
+func workingDirLabel(dir string) string {
+	if strings.TrimSpace(dir) == "" {
+		return "scratch sandbox (no host folder)"
+	}
+	return `<span class="uk-mono">` + templ.EscapeString(dir) + `</span>`
+}
+
 // renderRunBody writes the run view's body markup.
 func renderRunBody(w io.Writer, data RunData) error {
 	var b strings.Builder
@@ -186,6 +200,10 @@ func renderRunBody(w io.Writer, data RunData) error {
 	b.WriteString(`<span>Fan-out <strong>` + templ.EscapeString(orDashStr(data.FanOut)) + `</strong></span>`)
 	b.WriteString(`<span>Expires <strong>` + templ.EscapeString(orDashStr(data.Expires)) + `</strong></span>`)
 	b.WriteString(`</div>`)
+	// Where Commit writes back (issue #296): the mounted host working directory,
+	// so the member knows the agent is working on real files (and where), or that
+	// this is a scratch sandbox with no host folder.
+	b.WriteString(`<p class="uk-muted">Working directory: ` + workingDirLabel(data.WorkingDir) + `</p>`)
 	b.WriteString(`<p class="uk-muted">Proxy base URL: <span class="uk-mono">` + templ.EscapeString(orDashStr(data.ProxyBaseURL)) + `</span></p>`)
 	b.WriteString(`</section>`)
 
@@ -223,10 +241,12 @@ func renderRunBody(w io.Writer, data RunData) error {
 		b.WriteString(`</section>`)
 
 		// Diff-before-commit (design §6.3): the only path to host files, gated
-		// on an explicit member review + approve action.
+		// on an explicit member review + approve action. The copy names where
+		// Commit lands — the mounted host folder, or nowhere for a scratch
+		// sandbox (issue #296).
 		b.WriteString(`<section class="uk-card">`)
 		b.WriteString(`<div class="uk-card-header"><h2>Host changes</h2></div>`)
-		b.WriteString(`<p class="uk-muted">The agent's work stays in the sandbox. Nothing is written to your host files until you review the diff and approve.</p>`)
+		b.WriteString(hostChangesCopy(data.WorkingDir))
 		b.WriteString(`<div id="hostchanges">` + reviewButton(data.SessionID) + `</div>`)
 		b.WriteString(`</section>`)
 	}
@@ -247,6 +267,17 @@ func renderRunBody(w io.Writer, data RunData) error {
 
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// hostChangesCopy explains the diff-before-commit boundary for the run's mount
+// state (issue #296): when a host working directory is mounted it names the
+// folder Commit writes back to; a scratch sandbox says plainly that there is no
+// host folder to receive changes.
+func hostChangesCopy(dir string) string {
+	if strings.TrimSpace(dir) == "" {
+		return `<p class="uk-muted">This is a scratch sandbox — no host folder is mounted. The agent's work stays in the sandbox; there is nowhere on your host for Commit to write. Start a new conversation with a working directory to land changes in a real folder.</p>`
+	}
+	return `<p class="uk-muted">The agent's work stays in the sandbox. Nothing is written to <span class="uk-mono">` + templ.EscapeString(dir) + `</span> until you review the diff and click Commit.</p>`
 }
 
 // chatForm renders the prominent directive composer. Submitting appends the turn

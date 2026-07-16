@@ -87,7 +87,7 @@ func Home(data HomeData) templ.Component {
 						var templ_7745c5c3_Var5 string
 						templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(data.AgentsError)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `home.templ`, Line: 19, Col: 23}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/memberui/views/home.templ`, Line: 19, Col: 23}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 						if templ_7745c5c3_Err != nil {
@@ -108,6 +108,10 @@ func Home(data HomeData) templ.Component {
 						return templ_7745c5c3_Err
 					}
 				} else {
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<p class=\"uk-muted mc-workdir-help\">Working directory: the folder the agent works in. It's mounted into the sandbox; changes only reach these files when you review the diff and click Commit. Leave blank for a scratch sandbox.</p>")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
 					templ_7745c5c3_Var6 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 						templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 						templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
@@ -120,7 +124,7 @@ func Home(data HomeData) templ.Component {
 							}()
 						}
 						ctx = templ.InitializeContext(ctx)
-						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<thead><tr><th>Agent</th><th class=\"uk-num\">Version</th><th>Description</th><th></th></tr></thead> <tbody>")
+						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<thead><tr><th>Agent</th><th class=\"uk-num\">Version</th><th>Description</th><th>Working directory</th><th></th></tr></thead> <tbody>")
 						if templ_7745c5c3_Err != nil {
 							return templ_7745c5c3_Err
 						}
@@ -132,7 +136,7 @@ func Home(data HomeData) templ.Component {
 							var templ_7745c5c3_Var7 string
 							templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(a.Name)
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `home.templ`, Line: 39, Col: 20}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/memberui/views/home.templ`, Line: 43, Col: 20}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 							if templ_7745c5c3_Err != nil {
@@ -145,7 +149,7 @@ func Home(data HomeData) templ.Component {
 							var templ_7745c5c3_Var8 string
 							templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(a.Version)
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `home.templ`, Line: 40, Col: 38}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/memberui/views/home.templ`, Line: 44, Col: 38}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 							if templ_7745c5c3_Err != nil {
@@ -158,20 +162,20 @@ func Home(data HomeData) templ.Component {
 							var templ_7745c5c3_Var9 string
 							templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(a.Description)
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `home.templ`, Line: 41, Col: 44}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/memberui/views/home.templ`, Line: 45, Col: 44}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 							if templ_7745c5c3_Err != nil {
 								return templ_7745c5c3_Err
 							}
-							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</td><td class=\"uk-row-actions\"><form hx-post=\"/sessions\" hx-target=\"#sessions\" hx-swap=\"outerHTML\"><input type=\"hidden\" name=\"agent_id\" value=\"")
+							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</td><td colspan=\"2\"><form class=\"mc-launch\" hx-post=\"/sessions\" hx-target=\"#sessions\" hx-swap=\"outerHTML\"><input type=\"hidden\" name=\"agent_id\" value=\"")
 							if templ_7745c5c3_Err != nil {
 								return templ_7745c5c3_Err
 							}
 							var templ_7745c5c3_Var10 string
 							templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(a.ID)
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `home.templ`, Line: 44, Col: 59}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/memberui/views/home.templ`, Line: 48, Col: 59}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 							if templ_7745c5c3_Err != nil {
@@ -184,13 +188,13 @@ func Home(data HomeData) templ.Component {
 							var templ_7745c5c3_Var11 string
 							templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(a.Name)
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `home.templ`, Line: 45, Col: 63}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/memberui/views/home.templ`, Line: 49, Col: 63}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 							if templ_7745c5c3_Err != nil {
 								return templ_7745c5c3_Err
 							}
-							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("\">")
+							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("\"> <input type=\"text\" name=\"working_dir\" class=\"uk-input uk-input--sm mc-workdir-input\" placeholder=\"/Users/you/project (optional)\" title=\"The folder the agent works in. It&#39;s mounted into the sandbox; changes only reach these files when you review the diff and click Commit. Leave blank for a scratch sandbox.\" autocapitalize=\"off\" autocorrect=\"off\" autocomplete=\"off\" spellcheck=\"false\">")
 							if templ_7745c5c3_Err != nil {
 								return templ_7745c5c3_Err
 							}
@@ -302,7 +306,7 @@ func SessionsSection(data SessionsData) templ.Component {
 				var templ_7745c5c3_Var15 string
 				templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(data.Error)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `home.templ`, Line: 73, Col: 16}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/memberui/views/home.templ`, Line: 88, Col: 16}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 				if templ_7745c5c3_Err != nil {
@@ -357,7 +361,7 @@ func SessionsSection(data SessionsData) templ.Component {
 					var templ_7745c5c3_Var18 string
 					templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(s.Agent)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `home.templ`, Line: 95, Col: 61}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/memberui/views/home.templ`, Line: 110, Col: 61}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 					if templ_7745c5c3_Err != nil {
@@ -378,7 +382,7 @@ func SessionsSection(data SessionsData) templ.Component {
 					var templ_7745c5c3_Var19 string
 					templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(s.FanOut)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `home.templ`, Line: 99, Col: 36}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/memberui/views/home.templ`, Line: 114, Col: 36}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 					if templ_7745c5c3_Err != nil {
@@ -391,7 +395,7 @@ func SessionsSection(data SessionsData) templ.Component {
 					var templ_7745c5c3_Var20 string
 					templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(s.Expires)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `home.templ`, Line: 100, Col: 39}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/memberui/views/home.templ`, Line: 115, Col: 39}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 					if templ_7745c5c3_Err != nil {
@@ -430,7 +434,7 @@ func SessionsSection(data SessionsData) templ.Component {
 					var templ_7745c5c3_Var22 string
 					templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(terminatePath(s.ID))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `home.templ`, Line: 105, Col: 43}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/memberui/views/home.templ`, Line: 120, Col: 43}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 					if templ_7745c5c3_Err != nil {

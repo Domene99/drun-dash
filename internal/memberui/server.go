@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,7 +69,10 @@ const tokenCtxKey ctxKey = iota
 // is held so the run view can verify it fail-closed and derive the tool set
 // before binding the drun engine (ADR-0004 §3). AgentName is the human agent
 // name captured at launch so session history reads by name, not UUID (ADR-0005
-// §4).
+// §4). WorkingDir is the member's chosen host working directory (issue #296):
+// an absolute path that bindRun mounts into the drun session so the agent works
+// on real files and Commit writes back to that folder; empty means a scratch
+// sandbox (no host folder).
 type launchedSession struct {
 	SessionID    string
 	AgentID      string
@@ -77,6 +81,7 @@ type launchedSession struct {
 	proxyToken   string
 	FanOut       int
 	ExpiresAt    string
+	WorkingDir   string
 	policyBundle json.RawMessage
 }
 
@@ -473,8 +478,12 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 // handleLaunch launches the chosen agent's governed session, records it (with
 // its secret proxy_token and policy bundle) server-side, and drops the member
 // straight into the conversation via HTMX (HX-Redirect to the run view) —
-// chat-first (ADR-0007 §4). A rejected token asks HTMX to redirect to /login;
-// any other control-plane error is surfaced inside the sessions section.
+// chat-first (ADR-0007 §4). The optional working_dir is the member's chosen host
+// folder (issue #296): when present it must be an absolute path, captured here
+// and mounted into the drun session at bind time so the agent works on real
+// files and Commit writes back to it; blank keeps the prior scratch-sandbox
+// behavior. A rejected token asks HTMX to redirect to /login; any other
+// control-plane error is surfaced inside the sessions section.
 func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 
@@ -491,6 +500,19 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, http.StatusBadRequest, views.SessionsSection(views.SessionsData{
 			Sessions: s.sessionRows(),
 			Error:    "Choose an agent to launch.",
+		}))
+		return
+	}
+
+	// Optional host working directory (issue #296). A blank value means a
+	// scratch sandbox (no mount); a provided value must be an absolute host path
+	// so drun can mount it — a relative path is rejected up front rather than
+	// silently mounting something ambiguous or falling back to a temp dir.
+	workingDir := strings.TrimSpace(r.PostFormValue("working_dir"))
+	if workingDir != "" && !filepath.IsAbs(workingDir) {
+		s.render(w, r, http.StatusBadRequest, views.SessionsSection(views.SessionsData{
+			Sessions: s.sessionRows(),
+			Error:    "The working directory must be an absolute path (e.g. /Users/you/project). Leave it blank for a scratch sandbox.",
 		}))
 		return
 	}
@@ -517,6 +539,7 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		proxyToken:   launch.ProxyToken,
 		FanOut:       launch.FanOutCeiling,
 		ExpiresAt:    launch.ExpiresAt,
+		WorkingDir:   workingDir,
 		policyBundle: launch.PolicyBundle,
 	})
 
