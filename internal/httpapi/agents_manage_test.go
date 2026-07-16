@@ -43,6 +43,18 @@ func setAgentVersionStore(t *testing.T, s agentVersionStore) {
 	t.Cleanup(func() { newAgentVersionStore = orig })
 }
 
+// setAgentVersionTx points the publish transaction seam at the given fakes,
+// running the create+set-current closure inline with no pool (the fakes record
+// what the handler asked of them). It mirrors setEntitlementStore's tx wiring.
+func setAgentVersionTx(t *testing.T, vs agentVersionStore, as agentStore) {
+	t.Helper()
+	orig := withAgentVersionTx
+	withAgentVersionTx = func(_ context.Context, _ *db.Pool, fn func(agentVersionStore, agentStore) error) error {
+		return fn(vs, as)
+	}
+	t.Cleanup(func() { withAgentVersionTx = orig })
+}
+
 // setEntitlementStore points both the read seam (newEntitlementStore, used by
 // listAgentEntitlements) and the transactional seam (withEntitlementTx, used by
 // setAgentEntitlements) at s, running the replace closure inline with no pool.
@@ -362,24 +374,209 @@ func TestListAgentVersionsEmpty(t *testing.T) {
 
 // --- publishAgentVersion ----------------------------------------------------
 
-// TestPublishAgentVersion501 proves the documented contract gap is surfaced as
-// 501 not_implemented (ADR-0002 §4b).
-func TestPublishAgentVersion501(t *testing.T) {
-	fake := &fakeAgentStore{}
-	h, hdr := agentHarness(t, fake, "org-1")
-	rec := doJSON(t, h, http.MethodPost, "/agents/a1/versions",
-		`{"manifest_digest":"sha256:abc","notes":"n"}`, hdr)
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501 (body %s)", rec.Code, rec.Body.String())
+// publishBody is a full AgentVersionCreate payload used by the publish tests.
+const publishBody = `{"system_prompt":"do things",` +
+	`"allowed_tools":["read","write"],` +
+	`"policy_version_id":"pv1","endpoint_id":"ep1","budget_id":"bd1",` +
+	`"fan_out_ceiling":3,"notes":"first cut"}`
+
+// TestPublishAgentVersion proves the happy path: the manifest fields are
+// forwarded to the store at the next version number (current_version+1), the
+// agent's current_version is advanced to it, and the response carries a
+// computed manifest_digest (201).
+func TestPublishAgentVersion(t *testing.T) {
+	created := time.Date(2026, 7, 11, 9, 0, 0, 0, time.UTC)
+	agentFake := &fakeAgentStore{getAgent: storeAgent("a1", "org-1", "planner", nil, 4, created)}
+	verFake := &fakeAgentVersionStore{}
+	h, hdr := agentHarness(t, agentFake, "org-1")
+	setAgentVersionTx(t, verFake, agentFake)
+
+	rec := doJSON(t, h, http.MethodPost, "/agents/a1/versions", publishBody, hdr)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body.String())
 	}
-	var env struct {
-		Code string `json:"code"`
+
+	// The store received the manifest fields at version current_version+1.
+	if !verFake.createCalled {
+		t.Fatal("Create was not called")
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+	p := verFake.gotCreate
+	if p.AgentID != "a1" || p.Version != 5 {
+		t.Errorf("create = (agent %q, version %d), want (a1, 5)", p.AgentID, p.Version)
+	}
+	if p.SystemPrompt != "do things" || string(p.AllowedTools) != `["read","write"]` {
+		t.Errorf("create prompt/tools = (%q, %s), want (do things, [\"read\",\"write\"])", p.SystemPrompt, p.AllowedTools)
+	}
+	if p.PolicyVersionID == nil || *p.PolicyVersionID != "pv1" ||
+		p.EndpointID == nil || *p.EndpointID != "ep1" ||
+		p.BudgetID == nil || *p.BudgetID != "bd1" {
+		t.Errorf("create pins = (%v, %v, %v), want (pv1, ep1, bd1)", p.PolicyVersionID, p.EndpointID, p.BudgetID)
+	}
+	if p.FanOutCeiling != 3 {
+		t.Errorf("create fan_out_ceiling = %d, want 3", p.FanOutCeiling)
+	}
+
+	// current_version advanced to the new version.
+	if !agentFake.setVersionCalled || agentFake.gotSetVersionID != "a1" || agentFake.gotSetVersion != 5 {
+		t.Errorf("SetCurrentVersion = (%q, %d, called=%v), want (a1, 5, true)",
+			agentFake.gotSetVersionID, agentFake.gotSetVersion, agentFake.setVersionCalled)
+	}
+
+	// The response digest is computed from the stored manifest.
+	var body apiAgentVersion
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if env.Code != "not_implemented" {
-		t.Errorf("code = %q, want not_implemented", env.Code)
+	want := computeManifestDigest(store.AgentVersion{
+		AgentID:         "a1",
+		Version:         5,
+		SystemPrompt:    "do things",
+		AllowedTools:    json.RawMessage(`["read","write"]`),
+		PolicyVersionID: strptr("pv1"),
+		EndpointID:      strptr("ep1"),
+		BudgetID:        strptr("bd1"),
+		FanOutCeiling:   3,
+	})
+	if body.ManifestDigest != want {
+		t.Errorf("manifest_digest = %q, want %q", body.ManifestDigest, want)
+	}
+	// notes has no backing column and must not be echoed.
+	if _, ok := rawKeys(t, rec.Body.Bytes())["notes"]; ok {
+		t.Error("response contains notes; it must be omitted")
+	}
+}
+
+// TestPublishAgentVersionDefaultsTools proves an omitted allowed_tools stores
+// the empty array (the column default), not null.
+func TestPublishAgentVersionDefaultsTools(t *testing.T) {
+	created := time.Date(2026, 7, 11, 9, 0, 0, 0, time.UTC)
+	agentFake := &fakeAgentStore{getAgent: storeAgent("a1", "org-1", "planner", nil, 0, created)}
+	verFake := &fakeAgentVersionStore{}
+	h, hdr := agentHarness(t, agentFake, "org-1")
+	setAgentVersionTx(t, verFake, agentFake)
+
+	rec := doJSON(t, h, http.MethodPost, "/agents/a1/versions", `{"system_prompt":"p"}`, hdr)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body.String())
+	}
+	if string(verFake.gotCreate.AllowedTools) != "[]" {
+		t.Errorf("allowed_tools = %s, want []", verFake.gotCreate.AllowedTools)
+	}
+	if verFake.gotCreate.Version != 1 {
+		t.Errorf("version = %d, want 1 (0+1)", verFake.gotCreate.Version)
+	}
+}
+
+// TestPublishAgentVersionMissingSystemPrompt proves an empty/omitted
+// system_prompt is a 400 and the store is never touched.
+func TestPublishAgentVersionMissingSystemPrompt(t *testing.T) {
+	created := time.Date(2026, 7, 11, 9, 0, 0, 0, time.UTC)
+	agentFake := &fakeAgentStore{getAgent: storeAgent("a1", "org-1", "planner", nil, 0, created)}
+	verFake := &fakeAgentVersionStore{}
+	h, hdr := agentHarness(t, agentFake, "org-1")
+	setAgentVersionTx(t, verFake, agentFake)
+
+	rec := doJSON(t, h, http.MethodPost, "/agents/a1/versions", `{"allowed_tools":["read"]}`, hdr)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+	}
+	if verFake.createCalled || agentFake.setVersionCalled {
+		t.Error("store mutated despite a validation failure")
+	}
+}
+
+// TestPublishAgentVersionForbidden proves the agents.manage gate: a caller
+// without it gets 403 and the handler never runs.
+func TestPublishAgentVersionForbidden(t *testing.T) {
+	created := time.Date(2026, 7, 11, 9, 0, 0, 0, time.UTC)
+	agentFake := &fakeAgentStore{getAgent: storeAgent("a1", "org-1", "planner", nil, 0, created)}
+	verFake := &fakeAgentVersionStore{}
+	deps := testDeps(t, fakeOIDC{}, fakeMembers{})
+	setAgentStore(t, agentFake)
+	setAgentVersionTx(t, verFake, agentFake)
+	setResolver(t, permResolver(store.PermPoliciesManage)) // some permission, but not agents.manage
+	h := mountRouter(deps)
+	hdr := http.Header{"Authorization": {"Bearer " + agentToken(t, deps, "org-1")}}
+
+	rec := doJSON(t, h, http.MethodPost, "/agents/a1/versions", publishBody, hdr)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body %s)", rec.Code, rec.Body.String())
+	}
+	if verFake.createCalled || agentFake.gotGetID != "" {
+		t.Error("handler reached the store despite a permission miss")
+	}
+}
+
+// TestPublishAgentVersionCrossOrg proves a version cannot be published against
+// an agent in another org: 404, and the store is never mutated.
+func TestPublishAgentVersionCrossOrg(t *testing.T) {
+	created := time.Date(2026, 7, 11, 9, 0, 0, 0, time.UTC)
+	agentFake := &fakeAgentStore{getAgent: storeAgent("a1", "org-2", "other", nil, 0, created)}
+	verFake := &fakeAgentVersionStore{}
+	h, hdr := agentHarness(t, agentFake, "org-1")
+	setAgentVersionTx(t, verFake, agentFake)
+
+	rec := doJSON(t, h, http.MethodPost, "/agents/a1/versions", publishBody, hdr)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body %s)", rec.Code, rec.Body.String())
+	}
+	if verFake.createCalled || agentFake.setVersionCalled {
+		t.Error("store mutated for a cross-org agent")
+	}
+}
+
+// TestPublishAgentVersionConflict proves a losing race on the unique
+// (agent_id, version) constraint surfaces as 409.
+func TestPublishAgentVersionConflict(t *testing.T) {
+	created := time.Date(2026, 7, 11, 9, 0, 0, 0, time.UTC)
+	agentFake := &fakeAgentStore{getAgent: storeAgent("a1", "org-1", "planner", nil, 2, created)}
+	verFake := &fakeAgentVersionStore{createErr: store.ErrConflict}
+	h, hdr := agentHarness(t, agentFake, "org-1")
+	setAgentVersionTx(t, verFake, agentFake)
+
+	rec := doJSON(t, h, http.MethodPost, "/agents/a1/versions", publishBody, hdr)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestPublishAgentVersionAtomic proves the insert and the current_version bump
+// share one transaction: when SetCurrentVersion fails, the closure returns an
+// error so the transaction rolls back (never commits) and the response is not a
+// 201 — the just-inserted version is discarded rather than left orphaned.
+func TestPublishAgentVersionAtomic(t *testing.T) {
+	created := time.Date(2026, 7, 11, 9, 0, 0, 0, time.UTC)
+	agentFake := &fakeAgentStore{
+		getAgent:      storeAgent("a1", "org-1", "planner", nil, 2, created),
+		setVersionErr: store.ErrNotFound,
+	}
+	verFake := &fakeAgentVersionStore{}
+	h, hdr := agentHarness(t, agentFake, "org-1")
+
+	// A tx wrapper that commits only when the closure returns nil, so the test
+	// can assert the failed publish rolled back.
+	committed := false
+	orig := withAgentVersionTx
+	withAgentVersionTx = func(_ context.Context, _ *db.Pool, fn func(agentVersionStore, agentStore) error) error {
+		err := fn(verFake, agentFake)
+		if err == nil {
+			committed = true
+		}
+		return err
+	}
+	t.Cleanup(func() { withAgentVersionTx = orig })
+
+	rec := doJSON(t, h, http.MethodPost, "/agents/a1/versions", publishBody, hdr)
+	if rec.Code == http.StatusCreated {
+		t.Fatalf("status = 201, want an error status (body %s)", rec.Body.String())
+	}
+	if committed {
+		t.Error("transaction committed despite the SetCurrentVersion failure")
+	}
+	// Both operations were attempted inside the same transaction.
+	if !verFake.createCalled || !agentFake.setVersionCalled {
+		t.Errorf("create/set-current called = (%v, %v), want both true (one tx)",
+			verFake.createCalled, agentFake.setVersionCalled)
 	}
 }
 

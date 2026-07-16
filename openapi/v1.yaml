@@ -1356,11 +1356,32 @@ components:
 
     AgentVersionCreate:
       type: object
-      required: [manifest_digest]
+      required: [system_prompt]
       properties:
-        manifest_digest:
+        system_prompt:
           type: string
-          description: Content digest of the version manifest.
+          description: >-
+            System prompt that anchors the agent's behaviour. The core of the
+            version manifest.
+        allowed_tools:
+          type: array
+          items:
+            type: string
+          description: >-
+            Tool identifiers the agent may invoke on this version. Omitted or
+            empty grants no tools.
+        policy_version_id:
+          $ref: '#/components/schemas/Id'
+        endpoint_id:
+          $ref: '#/components/schemas/Id'
+        budget_id:
+          $ref: '#/components/schemas/Id'
+        fan_out_ceiling:
+          type: integer
+          minimum: 0
+          description: >-
+            Ceiling on concurrent sub-agents a session on this version may
+            launch. Defaults to 0 (no fan-out).
         notes:
           type: string
           description: Release notes for the version.
