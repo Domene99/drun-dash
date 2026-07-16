@@ -201,3 +201,28 @@ func TestRenderPoliciesCreateModalHasPermittedRoles(t *testing.T) {
 	mustContain(t, body, "New policy", "Permitted roles", "Deployer",
 		`name="permitted_roles"`, `value="r-deploy"`)
 }
+
+// TestRenderPoliciesCreateModalHasAllowedHosts asserts the New-policy dialog
+// collects the pre-authorized egress hosts (rules.network_allowlist), with help
+// text noting they apply only under the allowlist network posture.
+func TestRenderPoliciesCreateModalHasAllowedHosts(t *testing.T) {
+	body := render(t, Policies(PoliciesData{
+		Chrome: sampleChrome("policies"), CanManage: true,
+	}))
+	mustContain(t, body, "Allowed hosts", `name="network_allowlist"`,
+		"Pre-authorized by you — no approval needed.")
+}
+
+// TestRenderPolicyDetailAllowedHosts asserts a version's pre-authorized egress
+// hosts are shown read-only, and an em dash stands in when none are set.
+func TestRenderPolicyDetailAllowedHosts(t *testing.T) {
+	body := render(t, PolicyDetail(PolicyDetailData{
+		Chrome: sampleChrome("policies"), ID: "p1", Name: "Production",
+		CurrentVersion: "2", Created: TimeView{Relative: "now"},
+		Versions: []PolicyVersionRow{
+			{Version: "2", Digest: "sha256:aa", AllowedHosts: []string{"api.anthropic.com", "example.com"}, Created: TimeView{Relative: "now"}},
+			{Version: "1", Digest: "sha256:bb", Created: TimeView{Relative: "now"}},
+		},
+	}))
+	mustContain(t, body, "Allowed hosts", "api.anthropic.com, example.com")
+}

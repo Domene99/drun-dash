@@ -204,7 +204,10 @@ type PolicyVersionRow struct {
 	Digest    string
 	Algorithm string
 	KeyID     string
-	Created   TimeView
+	// AllowedHosts are the pre-authorized egress hosts from the version's
+	// boundary (rules.network_allowlist), shown read-only; empty when none.
+	AllowedHosts []string
+	Created      TimeView
 }
 
 // rolePath is the roles page URL.

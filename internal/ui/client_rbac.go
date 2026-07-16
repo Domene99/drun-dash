@@ -163,6 +163,7 @@ type PolicyVersion struct {
 	PolicyID  string          `json:"policy_id"`
 	Version   int             `json:"version"`
 	Digest    string          `json:"digest"`
+	Boundary  PolicyBoundary  `json:"boundary"`
 	Signing   SigningMetadata `json:"signing"`
 	CreatedAt string          `json:"created_at"`
 }
