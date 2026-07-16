@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Domene99/drun-dash/internal/ui/views"
+	"github.com/Domene99/drun-dash/internal/uikit"
 )
 
 // sessionCookieName is the cookie carrying the control-plane session token. It
@@ -34,6 +35,10 @@ const spendWindow = 30 * 24 * time.Hour
 // spendWindowLabel describes the fixed spend window in the UI.
 const spendWindowLabel = "(last 30 days)"
 
+// recentSessionsLimit caps how many sessions the Overview recent-activity list
+// shows; the full list lives on the Sessions page.
+const recentSessionsLimit = 8
+
 // ctxKey is the private context-key type for values this package stashes on the
 // request context.
 type ctxKey int
@@ -42,14 +47,15 @@ const tokenCtxKey ctxKey = iota
 
 // Server is the admin-ui HTTP handler: a chi router serving the login and OIDC
 // callback endpoints, the dashboard, the governance pages (sessions, spend,
-// approvals), the CLI device-approval page, and a health check, backed by a
-// control-plane [Client]. Construct it with [New]; it implements
-// [http.Handler].
+// approvals), the CLI device-approval page, the shared uikit assets, and a
+// health check, backed by a control-plane [Client]. Construct it with [New]; it
+// implements [http.Handler].
 type Server struct {
 	client       *Client
 	logger       *slog.Logger
 	oidc         *OIDCAuthenticator
 	secureCookie bool
+	environment  string
 	now          func() time.Time
 	router       chi.Router
 }
@@ -64,6 +70,12 @@ func WithSecureCookie(secure bool) Option {
 	return func(s *Server) { s.secureCookie = secure }
 }
 
+// WithEnvironment sets the environment indicator shown in the top bar (e.g.
+// "production"). An empty value hides the indicator.
+func WithEnvironment(env string) Option {
+	return func(s *Server) { s.environment = env }
+}
+
 // WithOIDC enables the OIDC authorization-code browser login. When set, GET
 // /login redirects to the identity provider and GET /callback completes the
 // exchange; when nil, the server keeps the paste-a-token dev login.
@@ -71,8 +83,8 @@ func WithOIDC(a *OIDCAuthenticator) Option {
 	return func(s *Server) { s.oidc = a }
 }
 
-// WithClock overrides the wall clock used to compute the spend window. Tests
-// use it for determinism; production uses the default [time.Now].
+// WithClock overrides the wall clock used to compute the spend window and
+// relative times. Tests use it for determinism; production uses [time.Now].
 func WithClock(now func() time.Time) Option {
 	return func(s *Server) { s.now = now }
 }
@@ -101,14 +113,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.router.ServeHTTP(w, r)
 }
 
-// routes builds the chi router. Health, the login endpoints, and the OIDC
-// callback are public; the dashboard, the governance pages, the device-approval
-// page, and the HTMX fragment/action sit behind requireAuth, which redirects to
-// /login when the session cookie is absent.
+// routes builds the chi router. Health, the shared uikit assets, the login
+// endpoints, and the OIDC callback are public; the dashboard, the governance
+// pages, the device-approval page, and the HTMX fragment/action sit behind
+// requireAuth, which redirects to /login when the session cookie is absent.
 func (s *Server) routes() chi.Router {
 	r := chi.NewRouter()
 
 	r.Get("/healthz", s.handleHealthz)
+	// The shared design-system stylesheet and theme script (embedded in uikit)
+	// are served under uikit.MountPrefix and linked by uikit.Head.
+	r.Handle(uikit.MountPrefix+"*", uikit.Handler())
 	r.Get("/login", s.handleLogin)
 	r.Post("/login", s.handleLoginSubmit)
 	r.Get("/callback", s.handleCallback)
@@ -300,20 +315,15 @@ func (s *Server) handleDeviceSubmit(w http.ResponseWriter, r *http.Request) {
 	}))
 }
 
-// handleDashboard renders the authenticated landing page. A token the control
-// plane rejects (401) clears the cookie and bounces the operator to /login; any
-// other whoami failure renders a 502 error page.
+// handleDashboard renders the authenticated Overview page. It builds the shell
+// chrome (identity for the top-bar user menu) and the live summary. A token the
+// control plane rejects (401) clears the cookie and bounces to /login.
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 
-	id, err := s.client.Whoami(r.Context(), token)
+	chrome, err := s.buildChrome(r.Context(), token, "overview", "Overview")
 	if err != nil {
-		if errors.Is(err, ErrUnauthorized) {
-			s.redirectToLogin(w, r)
-			return
-		}
-		s.logger.ErrorContext(r.Context(), "admin-ui: whoami failed", slog.Any("error", err))
-		http.Error(w, "control plane unavailable", http.StatusBadGateway)
+		s.redirectToLogin(w, r)
 		return
 	}
 
@@ -326,11 +336,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.render(w, r, http.StatusOK, views.Dashboard(views.DashboardData{
-		Identity: views.IdentityView{
-			Subject:        id.Subject,
-			OrganizationID: id.OrganizationID,
-			Roles:          rolesText(id.Roles),
-		},
+		Chrome:  chrome,
 		Summary: summary,
 	}))
 }
@@ -350,13 +356,21 @@ func (s *Server) handleSummaryFragment(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, http.StatusOK, views.Summary(summary))
 }
 
-// handleSessions renders the Sessions page: every governed session with its
-// fan-out ceiling. A rejected token redirects to /login; any other
+// handleSessions renders the Sessions page: every governed session by agent
+// name, status badge, relative start, and fan-out ceiling (the session UUID is
+// a secondary ID chip). A rejected token redirects to /login; any other
 // control-plane error is surfaced inline instead of blanking the page.
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 
-	var data views.SessionsData
+	chrome, err := s.buildChrome(r.Context(), token, "sessions", "Sessions")
+	if err != nil {
+		s.redirectToLogin(w, r)
+		return
+	}
+
+	data := views.SessionsData{Chrome: chrome}
+	names := s.agentNames(r.Context(), token)
 	list, err := s.client.ListSessions(r.Context(), token)
 	switch {
 	case errors.Is(err, ErrUnauthorized):
@@ -366,21 +380,32 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		s.logger.ErrorContext(r.Context(), "admin-ui: list sessions failed", slog.Any("error", err))
 		data.Error = "Could not load sessions: " + readableError(err)
 	default:
-		data.Sessions = sessionDetailRows(list.Items)
+		data.Sessions = sessionDetailRows(list.Items, names, s.now())
 	}
 	s.render(w, r, http.StatusOK, views.Sessions(data))
 }
 
 // handleTrajectory renders the forensic trajectory replay viewer: the session's
 // captured decision graph (its fork/rollback event tree) reconstructed from the
-// flat event list and rendered depth-first with indentation. A rejected token
-// redirects to /login; any other control-plane error (for example a 404 for an
-// unknown session) is surfaced inline rather than blanking the page.
+// flat event list and rendered depth-first with indentation, under a readable
+// heading (agent name when resolvable). A rejected token redirects to /login;
+// any other control-plane error (for example a 404 for an unknown session) is
+// surfaced inline rather than blanking the page.
 func (s *Server) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
 
-	data := views.TrajectoryData{SessionID: sessionID}
+	chrome, err := s.buildChrome(r.Context(), token, "sessions", "Trajectory")
+	if err != nil {
+		s.redirectToLogin(w, r)
+		return
+	}
+
+	data := views.TrajectoryData{
+		Chrome:    chrome,
+		SessionID: sessionID,
+		Heading:   s.trajectoryHeading(r.Context(), token, sessionID),
+	}
 	list, err := s.client.GetSessionTrajectory(r.Context(), token, sessionID)
 	switch {
 	case errors.Is(err, ErrUnauthorized):
@@ -390,7 +415,7 @@ func (s *Server) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 		s.logger.ErrorContext(r.Context(), "admin-ui: get trajectory failed", slog.Any("error", err))
 		data.Error = "Could not load trajectory: " + readableError(err)
 	default:
-		data.Rows = trajectoryRows(list.Items)
+		data.Rows = trajectoryRows(list.Items, s.now())
 	}
 	s.render(w, r, http.StatusOK, views.Trajectory(data))
 }
@@ -401,7 +426,13 @@ func (s *Server) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSpend(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 
-	data := views.SpendPageData{Window: spendWindowLabel, Total: "—"}
+	chrome, err := s.buildChrome(r.Context(), token, "spend", "Spend")
+	if err != nil {
+		s.redirectToLogin(w, r)
+		return
+	}
+
+	data := views.SpendPageData{Chrome: chrome, Window: spendWindowLabel, Total: "—"}
 
 	to := s.now().UTC()
 	from := to.Add(-spendWindow)
@@ -438,7 +469,13 @@ func (s *Server) handleSpend(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 
-	var data views.ApprovalsData
+	chrome, err := s.buildChrome(r.Context(), token, "approvals", "Approvals")
+	if err != nil {
+		s.redirectToLogin(w, r)
+		return
+	}
+
+	data := views.ApprovalsData{Chrome: chrome}
 	list, err := s.client.ListApprovals(r.Context(), token, "")
 	switch {
 	case errors.Is(err, ErrUnauthorized):
@@ -448,7 +485,7 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 		s.logger.ErrorContext(r.Context(), "admin-ui: list approvals failed", slog.Any("error", err))
 		data.Error = "Could not load approvals: " + readableError(err)
 	default:
-		data.Approvals = approvalRows(list.Items)
+		data.Approvals = approvalRows(list.Items, s.now())
 	}
 	s.render(w, r, http.StatusOK, views.Approvals(data))
 }
@@ -482,27 +519,60 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 		s.render(w, r, http.StatusOK, views.ApprovalRowTr(views.ApprovalRow{ID: id, RowError: "Decision failed: " + readableError(err)}))
 		return
 	}
-	s.render(w, r, http.StatusOK, views.ApprovalRowTr(approvalRow(*approval)))
+	s.render(w, r, http.StatusOK, views.ApprovalRowTr(approvalRow(*approval, s.now())))
 }
 
-// buildSummary fetches the dashboard's live data. Each section fails
-// independently: a control-plane error on one endpoint is recorded as that
-// section's error message rather than blanking the page. Only a rejected token
-// (ErrUnauthorized) is returned as an error, so the caller can redirect.
-func (s *Server) buildSummary(ctx context.Context, token string) (views.SummaryData, error) {
-	sd := views.SummaryData{SpendWindow: spendWindowLabel}
+// buildChrome assembles the shell chrome for an authenticated page: the active
+// nav key, the environment indicator, and the signed-in identity (for the
+// top-bar user menu) from GET /auth/whoami. A rejected token returns
+// ErrUnauthorized so the caller can redirect; any other whoami failure is
+// logged and the page still renders (with an empty identity) rather than
+// blanking on a control-plane blip.
+func (s *Server) buildChrome(ctx context.Context, token, active, title string) (views.Chrome, error) {
+	chrome := views.Chrome{Title: title, Active: active, Environment: s.environment}
+	id, err := s.client.Whoami(ctx, token)
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		return views.Chrome{}, err
+	case err != nil:
+		s.logger.ErrorContext(ctx, "admin-ui: whoami failed", slog.Any("error", err))
+	default:
+		chrome.Identity = views.IdentityView{
+			Subject:        id.Subject,
+			OrganizationID: id.OrganizationID,
+			Email:          id.Email,
+			Roles:          rolesText(id.Roles),
+		}
+	}
+	return chrome, nil
+}
 
+// buildSummary fetches the Overview's live data: the metric figures (active
+// sessions, pending approvals, spend this period, agents) and a recent-sessions
+// list with readable agent names. Each section fails independently — a metric
+// that cannot be loaded degrades to "—" and the recent-sessions failure is
+// surfaced inline. Only a rejected token (ErrUnauthorized) is returned as an
+// error, so the caller can redirect.
+func (s *Server) buildSummary(ctx context.Context, token string) (views.SummaryData, error) {
+	now := s.now()
+	sd := views.SummaryData{
+		SpendWindow:      spendWindowLabel,
+		ActiveSessions:   "—",
+		PendingApprovals: "—",
+		SpendTotal:       "—",
+		AgentCount:       "—",
+	}
+
+	names := map[string]string{}
 	agents, err := s.client.ListAgents(ctx, token)
 	switch {
 	case errors.Is(err, ErrUnauthorized):
 		return views.SummaryData{}, err
 	case err != nil:
 		s.logger.ErrorContext(ctx, "admin-ui: list agents failed", slog.Any("error", err))
-		sd.AgentsError = "Could not load agents."
-		sd.AgentCount = "—"
 	default:
+		names = agentNameMap(agents.Items)
 		sd.AgentCount = countText(len(agents.Items), agents.NextCursor)
-		sd.Agents = agentRows(agents.Items)
 	}
 
 	sessions, err := s.client.ListSessions(ctx, token)
@@ -512,13 +582,12 @@ func (s *Server) buildSummary(ctx context.Context, token string) (views.SummaryD
 	case err != nil:
 		s.logger.ErrorContext(ctx, "admin-ui: list sessions failed", slog.Any("error", err))
 		sd.SessionsError = "Could not load sessions."
-		sd.SessionCount = "—"
 	default:
-		sd.SessionCount = countText(len(sessions.Items), sessions.NextCursor)
-		sd.Sessions = sessionRows(sessions.Items)
+		sd.ActiveSessions = strconv.Itoa(activeSessionCount(sessions.Items))
+		sd.RecentSessions = recentSessionRows(sessions.Items, names, now)
 	}
 
-	to := s.now().UTC()
+	to := now.UTC()
 	from := to.Add(-spendWindow)
 	report, err := s.client.QuerySpend(ctx, token, from.Format(time.RFC3339), to.Format(time.RFC3339), "agent")
 	switch {
@@ -526,14 +595,62 @@ func (s *Server) buildSummary(ctx context.Context, token string) (views.SummaryD
 		return views.SummaryData{}, err
 	case err != nil:
 		s.logger.ErrorContext(ctx, "admin-ui: query spend failed", slog.Any("error", err))
-		sd.SpendError = "Could not load spend."
-		sd.SpendTotal = "—"
 	default:
 		sd.SpendTotal = amountText(report.Total, report.Currency)
-		sd.Spend = spendRows(report.Groups, report.Currency)
+	}
+
+	approvals, err := s.client.ListApprovals(ctx, token, "pending")
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		return views.SummaryData{}, err
+	case err != nil:
+		s.logger.ErrorContext(ctx, "admin-ui: list approvals failed", slog.Any("error", err))
+	default:
+		sd.PendingApprovals = countText(len(approvals.Items), approvals.NextCursor)
 	}
 
 	return sd, nil
+}
+
+// agentNames fetches the agent catalog and returns an agent-id -> name map for
+// resolving readable session labels. It is best-effort: a control-plane error
+// yields an empty map (rows then fall back to a short id) rather than failing
+// the whole page. A rejected token surfaces on the caller's own data fetch.
+func (s *Server) agentNames(ctx context.Context, token string) map[string]string {
+	agents, err := s.client.ListAgents(ctx, token)
+	if err != nil {
+		if !errors.Is(err, ErrUnauthorized) {
+			s.logger.ErrorContext(ctx, "admin-ui: list agents for names failed", slog.Any("error", err))
+		}
+		return map[string]string{}
+	}
+	return agentNameMap(agents.Items)
+}
+
+// trajectoryHeading resolves a readable heading for the trajectory viewer by
+// looking up the session's agent name. It is best-effort: any failure (or an
+// unknown session) falls back to the plain "Trajectory" heading.
+func (s *Server) trajectoryHeading(ctx context.Context, token, sessionID string) string {
+	const fallback = "Trajectory"
+	sessions, err := s.client.ListSessions(ctx, token)
+	if err != nil {
+		return fallback
+	}
+	agentID := ""
+	for _, sess := range sessions.Items {
+		if sess.SessionID == sessionID {
+			agentID = sess.AgentID
+			break
+		}
+	}
+	if agentID == "" {
+		return fallback
+	}
+	label := agentLabel(s.agentNames(ctx, token), agentID)
+	if label == "" || label == "—" {
+		return fallback
+	}
+	return fallback + " · " + label
 }
 
 // requireAuth is middleware that admits a request only when the session cookie
@@ -695,59 +812,130 @@ func readableError(err error) string {
 	return "control plane unavailable"
 }
 
-// agentRows maps catalog agents to display rows.
-func agentRows(agents []Agent) []views.AgentRow {
-	rows := make([]views.AgentRow, 0, len(agents))
+// agentNameMap builds an agent-id -> name lookup from the catalog page.
+func agentNameMap(agents []Agent) map[string]string {
+	m := make(map[string]string, len(agents))
 	for _, a := range agents {
-		ver := "—"
-		if a.LatestVersion != nil {
-			ver = strconv.Itoa(*a.LatestVersion)
+		m[a.ID] = a.Name
+	}
+	return m
+}
+
+// agentLabel resolves an agent id to its readable name, degrading gracefully to
+// a short id (never the full raw UUID as a headline) when the name is unknown.
+func agentLabel(names map[string]string, id string) string {
+	if n := strings.TrimSpace(names[id]); n != "" {
+		return n
+	}
+	if id == "" {
+		return "—"
+	}
+	if len(id) > 8 {
+		return id[:8] + "…"
+	}
+	return id
+}
+
+// activeSessionCount counts sessions that have not yet terminated.
+func activeSessionCount(sessions []Session) int {
+	n := 0
+	for _, sess := range sessions {
+		if sess.TerminatedAt == "" {
+			n++
 		}
-		rows = append(rows, views.AgentRow{
-			Name:        a.Name,
-			Version:     ver,
-			Description: a.Description,
-		})
 	}
-	return rows
+	return n
 }
 
-// sessionRows maps governed sessions to the compact dashboard-summary rows.
-func sessionRows(sessions []Session) []views.SessionRow {
+// relativeTime converts an RFC-3339 timestamp into a [views.TimeView] pairing a
+// human relative string with the absolute stamp (kept for the hover title).
+// An empty stamp renders an em dash; an unparseable one is shown verbatim.
+func relativeTime(now time.Time, ts string) views.TimeView {
+	if ts == "" {
+		return views.TimeView{Relative: "—"}
+	}
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return views.TimeView{Relative: ts, Absolute: ts}
+	}
+	return views.TimeView{Relative: humanizeSince(now, t), Absolute: ts}
+}
+
+// humanizeSince renders how long ago t was relative to now, at minute/hour/day/
+// month granularity. A future timestamp (clock skew) renders "just now".
+func humanizeSince(now, t time.Time) string {
+	d := now.Sub(t)
+	if d < 0 {
+		return "just now"
+	}
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return plural(int(d.Minutes()), "minute")
+	case d < 24*time.Hour:
+		return plural(int(d.Hours()), "hour")
+	case d < 30*24*time.Hour:
+		return plural(int(d.Hours()/24), "day")
+	default:
+		return plural(int(d.Hours()/(24*30)), "month")
+	}
+}
+
+// plural renders "<n> <unit>[s] ago", using at least 1 so a sub-unit rounding to
+// zero still reads sensibly.
+func plural(n int, unit string) string {
+	if n < 1 {
+		n = 1
+	}
+	s := strconv.Itoa(n) + " " + unit
+	if n != 1 {
+		s += "s"
+	}
+	return s + " ago"
+}
+
+// recentSessionRows maps the first few governed sessions to compact Overview
+// rows with readable agent names and relative start times.
+func recentSessionRows(sessions []Session, names map[string]string, now time.Time) []views.SessionRow {
+	if len(sessions) > recentSessionsLimit {
+		sessions = sessions[:recentSessionsLimit]
+	}
 	rows := make([]views.SessionRow, 0, len(sessions))
-	for _, s := range sessions {
+	for _, sess := range sessions {
 		rows = append(rows, views.SessionRow{
-			ID:      s.SessionID,
-			Agent:   s.AgentID,
-			Status:  s.Status,
-			Created: s.CreatedAt,
+			ID:      sess.SessionID,
+			Agent:   agentLabel(names, sess.AgentID),
+			Status:  sess.Status,
+			Started: relativeTime(now, sess.CreatedAt),
 		})
 	}
 	return rows
 }
 
-// sessionDetailRows maps governed sessions to the full Sessions-page rows,
-// which additionally carry the fan-out ceiling.
-func sessionDetailRows(sessions []Session) []views.SessionDetailRow {
+// sessionDetailRows maps governed sessions to the full Sessions-page rows:
+// readable agent name, status, relative start, fan-out ceiling, and the session
+// id (rendered as a secondary ID chip by the view).
+func sessionDetailRows(sessions []Session, names map[string]string, now time.Time) []views.SessionDetailRow {
 	rows := make([]views.SessionDetailRow, 0, len(sessions))
-	for _, s := range sessions {
+	for _, sess := range sessions {
 		rows = append(rows, views.SessionDetailRow{
-			ID:      s.SessionID,
-			Agent:   s.AgentID,
-			Status:  s.Status,
-			Created: s.CreatedAt,
-			FanOut:  strconv.Itoa(s.FanOutCeiling),
+			ID:      sess.SessionID,
+			Agent:   agentLabel(names, sess.AgentID),
+			Status:  sess.Status,
+			Started: relativeTime(now, sess.CreatedAt),
+			FanOut:  strconv.Itoa(sess.FanOutCeiling),
 		})
 	}
 	return rows
 }
 
 // trajectoryRows reconstructs the event tree from the flat list and flattens it
-// depth-first into display rows carrying an indentation depth. Roots are events
+// depth-first into display rows carrying an indentation string. Roots are events
 // with no parent (or a parent absent from the page); siblings are ordered by
 // occurrence time (then event id for stability). A visited set guards against a
 // malformed list whose parent links form a cycle.
-func trajectoryRows(events []TrajectoryEvent) []views.TrajectoryRow {
+func trajectoryRows(events []TrajectoryEvent, now time.Time) []views.TrajectoryRow {
 	known := make(map[string]bool, len(events))
 	for _, e := range events {
 		known[e.EventID] = true
@@ -788,8 +976,7 @@ func trajectoryRows(events []TrajectoryEvent) []views.TrajectoryRow {
 			Type:       e.Type,
 			Summary:    trajectorySummary(e.Fields),
 			FieldClass: e.FieldClass,
-			Occurred:   e.OccurredAt,
-			Depth:      depth,
+			Occurred:   relativeTime(now, e.OccurredAt),
 			Indent:     strings.Repeat("— ", depth),
 		})
 		for _, c := range children[e.EventID] {
@@ -876,17 +1063,17 @@ func budgetRows(budgets []Budget) []views.BudgetRow {
 }
 
 // approvalRows maps escalation-queue items to display rows.
-func approvalRows(approvals []Approval) []views.ApprovalRow {
+func approvalRows(approvals []Approval, now time.Time) []views.ApprovalRow {
 	rows := make([]views.ApprovalRow, 0, len(approvals))
 	for _, a := range approvals {
-		rows = append(rows, approvalRow(a))
+		rows = append(rows, approvalRow(a, now))
 	}
 	return rows
 }
 
 // approvalRow maps a single approval to a display row. A "pending" status is
 // the only state that offers the approve/deny action.
-func approvalRow(a Approval) views.ApprovalRow {
+func approvalRow(a Approval, now time.Time) views.ApprovalRow {
 	return views.ApprovalRow{
 		ID:        a.ID,
 		Session:   a.SessionID,
@@ -894,7 +1081,7 @@ func approvalRow(a Approval) views.ApprovalRow {
 		Reason:    a.Reason,
 		Status:    a.Status,
 		DecidedBy: a.DecidedBy,
-		Created:   a.CreatedAt,
+		Created:   relativeTime(now, a.CreatedAt),
 		Pending:   a.Status == "pending",
 	}
 }

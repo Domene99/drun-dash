@@ -102,8 +102,12 @@ func run() error {
 	client := ui.NewClient(baseURL, nil)
 
 	// Secure cookies require HTTPS; enable them only in production so plain-HTTP
-	// local development still works.
-	opts := []ui.Option{ui.WithSecureCookie(cfg.IsProduction())}
+	// local development still works. The environment name surfaces in the
+	// top-bar indicator (uikit TopBar).
+	opts := []ui.Option{
+		ui.WithSecureCookie(cfg.IsProduction()),
+		ui.WithEnvironment(cfg.Env),
+	}
 
 	oidcCfg := ui.OIDCConfigFromEnv()
 	if oidcCfg.Enabled() {

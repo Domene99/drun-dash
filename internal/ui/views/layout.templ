@@ -1,146 +1,76 @@
-// Package views holds the server-rendered templ components for the drun-dash
-// admin UI: the shared HTML layout, the login page, and the dashboard.
-//
-// Views are pure presentation. They receive fully-resolved view models (plain
-// strings and slices assembled by internal/ui) and never call the control
-// plane or import internal/ui, so the dependency edge runs one way
-// (internal/ui -> views) and stays cycle-free.
-//
-// The *.templ files are the source of truth; the committed *_templ.go files
-// are generated from them with `templ generate` (see internal/ui/README.md).
-// Edit the .templ file and regenerate — never hand-edit the generated Go.
 package views
 
-// htmxScriptURL is the CDN location of the HTMX runtime pulled into every page
-// by [Layout]. HTMX powers the dashboard's self-refreshing summary fragment and
-// the approvals row-swap; pinning an exact version keeps behavior reproducible.
-// Swap this for a vendored asset if serving from a CDN is undesirable in your
-// deployment.
-const htmxScriptURL = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"
+import "github.com/Domene99/drun-dash/internal/uikit"
 
-// Layout is the base HTML shell shared by every admin-ui page. It renders the
-// document head (including the HTMX script and minimal styling) and a top
-// navigation bar, then yields to the caller-supplied body via templ's children
-// mechanism.
-templ Layout(title string) {
-	<!DOCTYPE html>
-	<html lang="en">
-		<head>
-			<meta charset="utf-8"/>
-			<meta name="viewport" content="width=device-width, initial-scale=1"/>
-			<title>{ title } · drun-dash admin</title>
-			<script src={ htmxScriptURL } defer></script>
-			<style>
-				:root { color-scheme: light dark; }
-				* { box-sizing: border-box; }
-				body {
-					margin: 0;
-					font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-					line-height: 1.5;
-					background: #f6f7f9;
-					color: #1c2430;
+// Page is the base shell for every authenticated admin page. It composes the
+// shared uikit [uikit.Shell] — a persistent left sidebar (grouped nav with the
+// active section marked), a top bar (org word-mark, environment indicator,
+// dark-mode toggle, and a user menu carrying the signed-in identity and
+// sign-out) — and yields the page content via templ's children. This replaces
+// the old flat four-link top nav and the inline <style> block.
+templ Page(chrome Chrome) {
+	@uikit.Shell(uikit.ShellConfig{
+		Head: uikit.Head(uikit.HeadConfig{Title: chrome.Title}),
+		Sidebar: uikit.Sidebar(uikit.SidebarConfig{
+			Brand:     "drun-dash",
+			BrandHref: "/",
+			Groups:    navGroups(chrome.Active),
+		}),
+		TopBar: uikit.TopBar(uikit.TopBarConfig{
+			OrgName:     "drun-dash",
+			Environment: chrome.Environment,
+			UserMenu:    userMenu(chrome.Identity),
+		}),
+	}) {
+		{ children... }
+	}
+}
+
+// Minimal is the sidebar-less shell used by the pre-app pages (login) and the
+// focused device-approval confirmation: the shared top bar (word-mark + theme
+// toggle, no user menu) over full-width content.
+templ Minimal(title string) {
+	@uikit.Shell(uikit.ShellConfig{
+		Head:   uikit.Head(uikit.HeadConfig{Title: title}),
+		TopBar: uikit.TopBar(uikit.TopBarConfig{OrgName: "drun-dash"}),
+	}) {
+		{ children... }
+	}
+}
+
+// userMenu renders the top-bar profile menu: a disclosure whose summary is a
+// ghost button and whose panel is a card carrying the signed-in identity
+// ("who am I" — email, roles, and the subject/organization UUIDs as copyable ID
+// chips, per ADR-0005 §4) plus the sign-out action. The claims dump that used
+// to be the landing page lives here now.
+templ userMenu(id IdentityView) {
+	<details class="uk-user-menu">
+		<summary class="uk-btn uk-btn--ghost">{ userMenuLabel(id) }</summary>
+		@uikit.Card(uikit.CardConfig{Title: "Signed in"}) {
+			if id.Email != "" {
+				<p>{ id.Email }</p>
+			}
+			<p class="uk-muted">Roles: { orDash(id.Roles) }</p>
+			if id.Subject != "" {
+				<p>@uikit.IDChip(uikit.IDChipConfig{Label: "Subject", ID: id.Subject, Display: shortID(id.Subject)})</p>
+			}
+			if id.OrganizationID != "" {
+				<p>@uikit.IDChip(uikit.IDChipConfig{Label: "Org", ID: id.OrganizationID, Display: shortID(id.OrganizationID)})</p>
+			}
+			<form method="post" action="/logout">
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Type: "submit"}) {
+					Sign out
 				}
-				.topnav {
-					display: flex;
-					align-items: center;
-					gap: 1.5rem;
-					padding: 0.75rem 1.5rem;
-					background: #0f1b2d;
-					color: #fff;
-				}
-				.topnav .brand { font-weight: 700; letter-spacing: 0.02em; }
-				.topnav nav a { color: #cdd7e5; text-decoration: none; margin-right: 1rem; }
-				.topnav nav a:hover { color: #fff; }
-				.topnav form.logout { margin-left: auto; }
-				.topnav button {
-					background: transparent;
-					border: 1px solid #35506f;
-					color: #cdd7e5;
-					border-radius: 4px;
-					padding: 0.3rem 0.75rem;
-					cursor: pointer;
-				}
-				main { max-width: 60rem; margin: 1.5rem auto; padding: 0 1.5rem; }
-				.card {
-					background: #fff;
-					border: 1px solid #e2e6eb;
-					border-radius: 8px;
-					padding: 1.25rem;
-					margin-bottom: 1.25rem;
-				}
-				h1 { font-size: 1.4rem; margin: 0 0 0.75rem; }
-				h2 { font-size: 1.1rem; margin: 0; }
-				.muted { color: #667085; }
-				.error { color: #b42318; font-weight: 600; }
-				dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0; }
-				dt { color: #667085; }
-				dd { margin: 0; font-variant-numeric: tabular-nums; }
-				.cards { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; }
-				.metric { flex: 1 1 8rem; text-align: center; margin: 0; }
-				.metric-label { display: block; color: #667085; font-size: 0.85rem; }
-				.metric-value { display: block; font-size: 1.8rem; font-weight: 700; font-variant-numeric: tabular-nums; }
-				.summary-head { display: flex; align-items: center; justify-content: space-between; }
-				.summary-head button {
-					border: 1px solid #cbd5e1;
-					background: #fff;
-					border-radius: 4px;
-					padding: 0.3rem 0.75rem;
-					cursor: pointer;
-				}
-				table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
-				th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #eceff3; font-size: 0.9rem; }
-				th { color: #667085; font-weight: 600; }
-				td.num { text-align: right; font-variant-numeric: tabular-nums; }
-				.row-actions { display: flex; gap: 0.5rem; }
-				td button {
-					border: 1px solid #cbd5e1;
-					background: #fff;
-					border-radius: 4px;
-					padding: 0.25rem 0.7rem;
-					cursor: pointer;
-					font-size: 0.85rem;
-				}
-				td button.deny { border-color: #f0c2bc; color: #b42318; }
-				form.signin label { display: block; font-weight: 600; margin-bottom: 0.35rem; }
-				form.signin textarea {
-					width: 100%;
-					font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-					padding: 0.5rem;
-					border: 1px solid #cbd5e1;
-					border-radius: 4px;
-				}
-				form.signin button {
-					margin-top: 0.75rem;
-					background: #1d4ed8;
-					color: #fff;
-					border: 0;
-					border-radius: 4px;
-					padding: 0.5rem 1.25rem;
-					cursor: pointer;
-				}
-				.legend { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; color: #667085; font-size: 0.85rem; margin: 0.5rem 0 1rem; }
-				.badge { display: inline-block; border-radius: 4px; padding: 0.05rem 0.4rem; font-size: 0.72rem; font-weight: 600; }
-				.badge.structure { background: #e7f0fe; color: #1d4ed8; }
-				.badge.payload { background: #fdecea; color: #b42318; }
-				.indent { color: #b9c2cf; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
-			</style>
-		</head>
-		<body>
-			<header class="topnav">
-				<span class="brand">drun-dash</span>
-				<nav>
-					<a href="/">Dashboard</a>
-					<a href="/sessions">Sessions</a>
-					<a href="/spend">Spend</a>
-					<a href="/approvals">Approvals</a>
-				</nav>
-				<form method="post" action="/logout" class="logout">
-					<button type="submit">Sign out</button>
-				</form>
-			</header>
-			<main>
-				{ children... }
-			</main>
-		</body>
-	</html>
+			</form>
+		}
+	</details>
+}
+
+// userMenuLabel is the collapsed user-menu label: the member's email when
+// known, otherwise a neutral "Account".
+func userMenuLabel(id IdentityView) string {
+	if id.Email != "" {
+		return id.Email
+	}
+	return "Account"
 }
