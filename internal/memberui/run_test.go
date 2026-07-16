@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Domene99/drun-dash/internal/uikit"
 	"github.com/Domene99/drun-dash/pkg/drunmcp"
 )
 
@@ -74,6 +75,15 @@ func TestRunViewBindsEngineAndShowsTools(t *testing.T) {
 	}
 	if strings.Contains(body, "dgp_super_secret") {
 		t.Errorf("run view leaked proxy token: %q", body)
+	}
+	// The htmx SSE extension must load from the local, content-hashed uikit
+	// path — never a CDN. The old jsdelivr URL 404'd, silently breaking streaming
+	// (issue #292).
+	if !strings.Contains(body, uikit.SSEExtensionPath) {
+		t.Errorf("run view should load the vendored SSE extension from %q: %q", uikit.SSEExtensionPath, body)
+	}
+	if strings.Contains(body, "jsdelivr") || strings.Contains(body, "cdn.") {
+		t.Errorf("run view must not load the SSE extension from a CDN: %q", body)
 	}
 }
 

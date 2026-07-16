@@ -32,8 +32,8 @@ import templruntime "github.com/a-h/templ/runtime"
 const themeInitScript = "(function(){try{var t=localStorage.getItem('uikit-theme');if(t==='dark'||t==='light'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();"
 
 // Head renders the document <head>: metadata, the initial-theme script, the
-// content-hashed stylesheet, HTMX, and the deferred theme script. Compose it
-// into a page with [Shell].
+// content-hashed stylesheet, the vendored HTMX runtime, and the deferred theme
+// script. Compose it into a page with [Shell].
 func Head(cfg HeadConfig) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -94,9 +94,9 @@ func Head(cfg HeadConfig) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var4 string
-		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(htmxScriptURL)
+		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(CoreScriptURL())
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/uikit/components.templ`, Line: 28, Col: 29}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/uikit/components.templ`, Line: 28, Col: 31}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
