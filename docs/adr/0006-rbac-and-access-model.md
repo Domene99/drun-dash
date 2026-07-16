@@ -1,6 +1,8 @@
 # 0006 — RBAC and access model (roles, custom roles, permissions)
 
-- **Status:** Proposed
+- **Status:** Proposed. The permission model stands; the `role_agents` /
+  `entitlements` agent-access mechanisms are **Superseded by
+  [0010](0010-policy-centric-access-model.md)** (policy-centric access).
 - **Date:** 2026-07-15
 - **Deciders:** drun-dash control-plane / admin-console / CLI work streams
 - **Batch:** 21 (decision artifact; no code)

@@ -122,17 +122,6 @@ func (f *fakeEntitlementStore) Create(_ context.Context, p store.CreateEntitleme
 	return e, nil
 }
 
-type fakeTeamMembershipStore struct {
-	teams       []store.Team
-	err         error
-	gotMemberID string
-}
-
-func (f *fakeTeamMembershipStore) ListTeams(_ context.Context, memberID string) ([]store.Team, error) {
-	f.gotMemberID = memberID
-	return f.teams, f.err
-}
-
 type fakePolicyVersionStore struct {
 	pv    store.PolicyVersion
 	err   error
@@ -207,8 +196,9 @@ type launchFixture struct {
 
 // defaultLaunchFixture returns a fully authorized, correctly configured launch:
 // agent agt_1 in org-1, current version 4, a resolver that authorizes the run
-// with a max_fan_out of 3, an agent-version fan-out of 5, and a boundary with
-// fan_out_ceiling 8 — so a requested_fan_out of 10 clamps to 3.
+// (the run grant carries no tuning under ADR-0010), an agent-version fan-out of
+// 5, and a boundary with fan_out_ceiling 8 — so a requested_fan_out of 10 clamps
+// to 5 (the agent version's ceiling).
 func defaultLaunchFixture() *launchFixture {
 	created := time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC)
 	av := store.AgentVersion{
@@ -223,7 +213,7 @@ func defaultLaunchFixture() *launchFixture {
 	return &launchFixture{
 		agent:    &fakeAgentStore{getAgent: storeAgent("agt_1", "org-1", "planner", nil, 4, created)},
 		versions: &fakeAgentVersionStore{byVersion: map[int]store.AgentVersion{4: av}},
-		resolver: &fakeResolver{runOK: true, runGrant: store.RunGrant{MaxFanOut: intptr(3)}},
+		resolver: &fakeResolver{runOK: true, runGrant: store.RunGrant{}},
 		policies: &fakePolicyVersionStore{pv: store.PolicyVersion{
 			ID: "pv-1", PolicyID: "pol-1", Version: 7, ContentJSON: json.RawMessage(boundary),
 		}},
@@ -294,9 +284,9 @@ func TestLaunchSession(t *testing.T) {
 	if len(body.ProxyToken) < 4 || body.ProxyToken[:4] != "dgp_" {
 		t.Errorf("proxy_token = %q, want dgp_ prefix", body.ProxyToken)
 	}
-	// requested 10 vs agent-version 5, boundary 8, run grant 3 → min = 3.
-	if body.FanOutCeiling != 3 {
-		t.Errorf("fan_out_ceiling = %d, want 3 (clamped)", body.FanOutCeiling)
+	// requested 10 vs agent-version 5, boundary 8 → min = 5 (the version ceiling).
+	if body.FanOutCeiling != 5 {
+		t.Errorf("fan_out_ceiling = %d, want 5 (clamped to the version ceiling)", body.FanOutCeiling)
 	}
 	if body.ExpiresAt == nil {
 		t.Fatal("expires_at = nil, want the session lifetime")
@@ -327,8 +317,8 @@ func TestLaunchSession(t *testing.T) {
 	if sp.PolicyVersionID == nil || *sp.PolicyVersionID != "pv-1" {
 		t.Errorf("session policy_version_id = %v, want pv-1", sp.PolicyVersionID)
 	}
-	if sp.FanOutCeiling != 3 {
-		t.Errorf("session fan_out_ceiling = %d, want 3", sp.FanOutCeiling)
+	if sp.FanOutCeiling != 5 {
+		t.Errorf("session fan_out_ceiling = %d, want 5", sp.FanOutCeiling)
 	}
 	if sp.AgentVersion == nil || *sp.AgentVersion != 4 {
 		t.Errorf("session agent_version = %v, want 4", sp.AgentVersion)
@@ -358,8 +348,9 @@ func TestLaunchSession(t *testing.T) {
 	}
 }
 
-// TestLaunchSessionAllAgentsGrant proves an "all agents" run grant (no per-agent
-// tuning) launches against the agent version's own policy pin.
+// TestLaunchSessionAllAgentsGrant proves an "all agents" run grant launches
+// against the agent version's own policy pin — the version manifest is the sole
+// boundary authority under ADR-0010.
 func TestLaunchSessionAllAgentsGrant(t *testing.T) {
 	f := defaultLaunchFixture()
 	f.resolver.runGrant = store.RunGrant{AllAgents: true}
@@ -369,25 +360,9 @@ func TestLaunchSessionAllAgentsGrant(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body.String())
 	}
-	// No override → the agent version's pinned policy version is used.
+	// The agent version's pinned policy version is used.
 	if f.policies.gotID != "pv-1" {
 		t.Errorf("resolved policy version = %q, want pv-1 (agent-version pin)", f.policies.gotID)
-	}
-}
-
-// TestLaunchSessionRunGrantPolicyOverride proves a run grant's policy-version
-// override is used over the agent version's pin.
-func TestLaunchSessionRunGrantPolicyOverride(t *testing.T) {
-	f := defaultLaunchFixture()
-	f.resolver.runGrant = store.RunGrant{PolicyVersionID: strptr("pv-override")}
-	h, hdr, _ := launchHarness(t, f)
-
-	rec := doJSON(t, h, http.MethodPost, "/sessions/launch", `{"agent_id":"agt_1"}`, hdr)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body.String())
-	}
-	if f.policies.gotID != "pv-override" {
-		t.Errorf("resolved policy version = %q, want pv-override (grant override)", f.policies.gotID)
 	}
 }
 
@@ -514,7 +489,7 @@ func TestLaunchSessionMisconfig(t *testing.T) {
 	t.Run("no effective policy version", func(t *testing.T) {
 		f := defaultLaunchFixture()
 		av := f.versions.byVersion[4]
-		av.PolicyVersionID = nil // and the run grant carries no override
+		av.PolicyVersionID = nil // the version has no policy pin — misconfig under ADR-0010
 		f.versions.byVersion[4] = av
 		h, hdr, _ := launchHarness(t, f)
 		rec := doJSON(t, h, http.MethodPost, "/sessions/launch", `{"agent_id":"agt_1"}`, hdr)

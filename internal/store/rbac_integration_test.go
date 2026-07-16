@@ -4,7 +4,9 @@
 // role_agents, member_roles, team_roles) and the AccessResolver, mirroring the
 // other *_integration_test.go files: they share requirePool / newOrg / uniq /
 // newMember and skip when Postgres is unreachable. Each test hangs its rows off
-// a throwaway org whose cleanup cascades.
+// a throwaway org whose cleanup cascades. The policy-centric AuthorizeRun /
+// ListAccessibleAgentIDs coverage (ADR-0010) lives in
+// policy_roles_integration_test.go alongside the policy_roles store tests.
 package store
 
 import (
@@ -325,81 +327,5 @@ func TestIntegrationResolverPermissions(t *testing.T) {
 		if eff[i-1] >= eff[i] {
 			t.Fatalf("EffectivePermissions not sorted/deduped: %v", eff)
 		}
-	}
-}
-
-func TestIntegrationResolverAuthorizeRun(t *testing.T) {
-	pool, ctx := requirePool(t)
-	org := newOrg(t, ctx, pool)
-	builtins := seedBuiltins(t, ctx, pool, org.ID)
-	agentA, err := NewAgentStore(pool).Create(ctx, org.ID, "a", nil)
-	if err != nil {
-		t.Fatalf("create agent a: %v", err)
-	}
-	agentB, err := NewAgentStore(pool).Create(ctx, org.ID, "b", nil)
-	if err != nil {
-		t.Fatalf("create agent b: %v", err)
-	}
-	member := newMember(t, ctx, pool, org.ID)
-	roles := NewRoleStore(pool)
-	mrs := NewMemberRoleStore(pool)
-	resolver := NewAccessResolver(pool)
-
-	// A member with no run permission cannot launch anything.
-	if _, ok, err := resolver.AuthorizeRun(ctx, member.ID, agentA.ID); err != nil || ok {
-		t.Fatalf("AuthorizeRun(no perms) = ok %v, err %v; want false", ok, err)
-	}
-
-	// Built-in Member grants agents.run but no agent access -> still denied.
-	if _, err := mrs.AssignRole(ctx, member.ID, builtins[BuiltinMember].ID); err != nil {
-		t.Fatalf("assign member role: %v", err)
-	}
-	if _, ok, err := resolver.AuthorizeRun(ctx, member.ID, agentA.ID); err != nil || ok {
-		t.Fatalf("AuthorizeRun(run but no access) = ok %v, err %v; want false", ok, err)
-	}
-
-	// A custom role granting agents.run + agentA with tuning authorizes agentA.
-	fan := 5
-	custom, err := roles.Create(ctx, CreateRoleParams{
-		OrgID: org.ID, Name: "runs-a", Permissions: []Permission{PermAgentsRun},
-		Agents: []RoleAgentGrant{{AgentID: agentA.ID, MaxFanOut: &fan}},
-	})
-	if err != nil {
-		t.Fatalf("create custom role: %v", err)
-	}
-	if _, err := mrs.AssignRole(ctx, member.ID, custom.ID); err != nil {
-		t.Fatalf("assign custom role: %v", err)
-	}
-	grant, ok, err := resolver.AuthorizeRun(ctx, member.ID, agentA.ID)
-	if err != nil || !ok {
-		t.Fatalf("AuthorizeRun(agentA) = ok %v, err %v; want true", ok, err)
-	}
-	if grant.AllAgents {
-		t.Fatalf("AuthorizeRun(agentA) AllAgents = true, want explicit grant")
-	}
-	if grant.MaxFanOut == nil || *grant.MaxFanOut != fan {
-		t.Fatalf("AuthorizeRun(agentA) MaxFanOut = %v, want %d", grant.MaxFanOut, fan)
-	}
-	// agentB is not in the member's access.
-	if _, ok, err := resolver.AuthorizeRun(ctx, member.ID, agentB.ID); err != nil || ok {
-		t.Fatalf("AuthorizeRun(agentB) = ok %v, err %v; want false", ok, err)
-	}
-
-	// An all_agents role authorizes any agent with no per-agent tuning.
-	allRole, err := roles.Create(ctx, CreateRoleParams{
-		OrgID: org.ID, Name: "runs-all", AllAgents: true, Permissions: []Permission{PermAgentsRun},
-	})
-	if err != nil {
-		t.Fatalf("create all-agents role: %v", err)
-	}
-	if _, err := mrs.AssignRole(ctx, member.ID, allRole.ID); err != nil {
-		t.Fatalf("assign all-agents role: %v", err)
-	}
-	grantB, ok, err := resolver.AuthorizeRun(ctx, member.ID, agentB.ID)
-	if err != nil || !ok {
-		t.Fatalf("AuthorizeRun(agentB via all_agents) = ok %v, err %v; want true", ok, err)
-	}
-	if !grantB.AllAgents || grantB.MaxFanOut != nil || grantB.PolicyVersionID != nil {
-		t.Fatalf("all_agents grant should carry no tuning: %+v", grantB)
 	}
 }

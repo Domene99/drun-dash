@@ -60,6 +60,10 @@ var newAgentVersionStore = func(q store.Querier) agentVersionStore {
 	return store.NewAgentVersionStore(q)
 }
 
+// entitlementStore is the deprecated per-agent grant surface. Launch
+// authorization is now policy-centric (ADR-0010) and no longer consults it; it
+// remains only because the legacy setAgentEntitlements handler (agents.go)
+// still writes it until a later UI batch removes that surface.
 type entitlementStore interface {
 	ListByAgent(ctx context.Context, agentID string) ([]store.Entitlement, error)
 	Create(ctx context.Context, p store.CreateEntitlementParams) (store.Entitlement, error)
@@ -68,14 +72,6 @@ type entitlementStore interface {
 
 var newEntitlementStore = func(q store.Querier) entitlementStore {
 	return store.NewEntitlementStore(q)
-}
-
-type teamMembershipReader interface {
-	ListTeams(ctx context.Context, memberID string) ([]store.Team, error)
-}
-
-var newTeamMembershipStore = func(q store.Querier) teamMembershipReader {
-	return store.NewTeamMembershipStore(q)
 }
 
 // policyVersionStore is the shared slice of *[store.PolicyVersionStore] the
@@ -182,7 +178,7 @@ func (t dbSessionTerminator) Terminate(ctx context.Context, sessionID string) (s
 // apiSessionLaunchRequest is the POST /sessions/launch body
 // (openapi/v1.yaml #/components/schemas/SessionLaunchRequest). Only agent_id is
 // required; agent_version pins a specific version (else the agent's current
-// version is used), requested_fan_out is clamped down to the policy/entitlement
+// version is used), requested_fan_out is clamped down to the policy/version
 // ceilings, and labels are recorded for attribution.
 type apiSessionLaunchRequest struct {
 	AgentID         string            `json:"agent_id"`
@@ -268,29 +264,26 @@ func (d Deps) launchSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// §1.3 Authorize the launch against the caller's roles (ADR-0006 §6): the
-	// caller must hold agents.run in their effective permission set AND this
-	// agent must be in their effective agent access. No match → the one
-	// contract-sanctioned 403.
-	grant, ok := d.authorizeRun(w, ctx, agent.ID, claims.MemberID)
-	if !ok {
+	// §1.3 Authorize the launch against the caller's roles (ADR-0006 §6,
+	// ADR-0010): the caller must hold agents.run AND the agent's governing
+	// policy must permit one of their roles (or the agent has no policy, or the
+	// caller holds an all_agents role). No match → the one contract-sanctioned
+	// 403.
+	if _, ok := d.authorizeRun(w, ctx, agent.ID, claims.MemberID); !ok {
 		return
 	}
 
-	// §1.4 Effective policy version: the resolved run grant's override wins,
-	// else the agent version's pin. Neither present is a misconfiguration → 500.
-	var policyVersionID string
-	switch {
-	case grant.PolicyVersionID != nil:
-		policyVersionID = *grant.PolicyVersionID
-	case av.PolicyVersionID != nil:
-		policyVersionID = *av.PolicyVersionID
-	default:
+	// §1.4 Effective policy version: under the policy-centric model (ADR-0010)
+	// the agent version's manifest pin is the sole authority — the run grant no
+	// longer carries a policy override. A version with no policy pin is a
+	// server-side misconfiguration → 500.
+	if av.PolicyVersionID == nil {
 		slog.Error("session launch: no effective policy version",
 			slog.String("agent_id", agent.ID), slog.Int("agent_version", av.Version))
 		writeInternalError(w)
 		return
 	}
+	policyVersionID := *av.PolicyVersionID
 
 	// §1.5 Resolve the endpoint the proxy will vault.Resolve at call time.
 	if av.EndpointID == nil {
@@ -322,7 +315,7 @@ func (d Deps) launchSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// §1 fan-out clamp: the minimum of every bound that applies.
-	fanOut := clampFanOut(av.FanOutCeiling, req.RequestedFanOut, boundary.FanOutCeiling, grant.MaxFanOut)
+	fanOut := clampFanOut(av.FanOutCeiling, req.RequestedFanOut, boundary.FanOutCeiling)
 
 	// §2 Assemble and sign the bundle before any mutation.
 	now := time.Now().UTC()
@@ -497,10 +490,11 @@ func (d Deps) terminateSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // clampFanOut returns the effective fan-out ceiling: the minimum of the agent
-// version's ceiling (always a bound) and any of the requested value, the policy
-// boundary's ceiling, and the run grant's max_fan_out that are set. A
-// requested value only ever clamps the ceiling down (ADR-0003 §1). The result
-// is floored at 0 to satisfy the sessions.fan_out_ceiling CHECK (>= 0).
+// version's ceiling (always a bound) and any of the requested value and the
+// policy boundary's ceiling that are set. A requested value only ever clamps
+// the ceiling down (ADR-0003 §1). Under the policy-centric model (ADR-0010) the
+// run grant no longer contributes a fan-out override. The result is floored at
+// 0 to satisfy the sessions.fan_out_ceiling CHECK (>= 0).
 func clampFanOut(agentVersionCeiling int, bounds ...*int) int {
 	eff := agentVersionCeiling
 	for _, b := range bounds {

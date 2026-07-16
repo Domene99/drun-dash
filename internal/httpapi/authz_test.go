@@ -26,8 +26,14 @@ type fakeResolver struct {
 	runOK    bool
 	runErr   error
 
+	// accessible backs ListAccessibleAgentIDs (GET /me/agents): the ids the
+	// caller may see, or accessibleErr on failure.
+	accessible    []string
+	accessibleErr error
+
 	gotMemberID string
 	gotAgentID  string
+	gotOrgID    string
 	gotPerm     store.Permission
 }
 
@@ -68,6 +74,14 @@ func (f *fakeResolver) AuthorizeRun(_ context.Context, memberID, agentID string)
 		return store.RunGrant{}, false, f.runErr
 	}
 	return f.runGrant, f.runOK, nil
+}
+
+func (f *fakeResolver) ListAccessibleAgentIDs(_ context.Context, memberID, orgID string) ([]string, error) {
+	f.gotMemberID, f.gotOrgID = memberID, orgID
+	if f.accessibleErr != nil {
+		return nil, f.accessibleErr
+	}
+	return f.accessible, nil
 }
 
 // allowAllResolver returns a resolver that grants every permission and
