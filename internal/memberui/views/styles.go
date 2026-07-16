@@ -32,12 +32,16 @@ const memberConsoleCSS = `
 	margin: var(--space-3) 0;
 }
 
-/* Conversation transcript: user vs assistant bubbles. */
+/* Conversation transcript: user vs assistant bubbles. Text is selectable so a
+   member can highlight-and-copy the agent's replies inside the native webview,
+   which has no Edit menu (issue #294). */
 .mc-transcript {
 	display: flex;
 	flex-direction: column;
 	gap: var(--space-4);
 	margin-bottom: var(--space-4);
+	user-select: text;
+	-webkit-user-select: text;
 }
 .mc-transcript:empty { display: none; }
 .mc-turn { display: flex; flex-direction: column; gap: var(--space-2); }
@@ -47,6 +51,8 @@ const memberConsoleCSS = `
 	max-width: 85%;
 	font-size: var(--text-sm);
 	line-height: var(--leading-normal);
+	user-select: text;
+	-webkit-user-select: text;
 }
 .mc-msg--user {
 	align-self: flex-end;
@@ -73,12 +79,16 @@ const memberConsoleCSS = `
 	gap: var(--space-2);
 	font-size: var(--text-sm);
 	color: var(--text);
+	user-select: text;
+	-webkit-user-select: text;
 }
 .mc-step code {
 	background: var(--surface);
 	border: 1px solid var(--border);
 	border-radius: var(--radius-sm);
 	padding: 0 var(--space-1);
+	user-select: text;
+	-webkit-user-select: text;
 }
 .mc-step--model,
 .mc-step--result { color: var(--text-muted); }
@@ -87,10 +97,39 @@ const memberConsoleCSS = `
 	color: var(--text);
 	white-space: normal;
 }
+.mc-final-text { user-select: text; -webkit-user-select: text; }
 .mc-step--blocked,
 .mc-step--error { color: var(--danger-fg); }
 .mc-step--escalated { color: var(--warning-fg); }
 .mc-step-meta { color: var(--text-subtle); font-size: var(--text-xs); }
+
+/* Copy affordance (issue #294): a small button on the agent bubble, the final
+   answer, and code/diff blocks that copies that element's text via the async
+   Clipboard API. The button itself is never part of a text selection. */
+.mc-copy {
+	align-self: flex-end;
+	display: inline-flex;
+	align-items: center;
+	gap: var(--space-1);
+	padding: 0 var(--space-2);
+	min-height: var(--space-5);
+	font-size: var(--text-xs);
+	line-height: var(--leading-normal);
+	color: var(--text-muted);
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+	user-select: none;
+	-webkit-user-select: none;
+}
+.mc-copy:hover { color: var(--text); }
+.mc-copy.is-copied { color: var(--success-fg); border-color: var(--success-border); }
+/* The bubble/final copy button sits inline with the streamed content. */
+.mc-msg--agent > .mc-copy { align-self: flex-end; order: 99; }
+/* A code/diff block with a copy button pinned to its top-right corner. */
+.mc-code { position: relative; }
+.mc-code > .mc-copy { position: absolute; top: var(--space-2); right: var(--space-2); }
 
 /* Tool set offered to the model. */
 .mc-tools {
@@ -124,6 +163,8 @@ const memberConsoleCSS = `
 	font-family: var(--font-mono);
 	font-size: var(--text-xs);
 	white-space: pre;
+	user-select: text;
+	-webkit-user-select: text;
 }
 .mc-timeline {
 	margin: 0;
