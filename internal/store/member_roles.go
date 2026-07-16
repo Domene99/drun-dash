@@ -65,7 +65,7 @@ func (s *MemberRoleStore) ListRolesForMember(ctx context.Context, memberID strin
 // ListMembersForRole returns the members assigned roleID directly, ordered by
 // email. An empty result is not an error.
 func (s *MemberRoleStore) ListMembersForRole(ctx context.Context, roleID string) ([]Member, error) {
-	const q = `SELECT m.id, m.org_id, m.idp_subject, m.email, m.display_name, m.role, m.active, m.created_at
+	const q = `SELECT m.id, m.org_id, m.idp_subject, m.email, m.display_name, m.role, m.active, m.created_at, m.password_hash
 		FROM members m
 		JOIN member_roles mr ON mr.member_id = m.id
 		WHERE mr.role_id = $1
