@@ -85,14 +85,16 @@ func (s *Server) handleRunView(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, http.StatusOK, views.RunPage(data))
 }
 
-// bindRun verifies the session's policy bundle and binds the drun engine. It is
-// fail-closed: no verified bundle → no bind → no run (ADR-0004 §3). The caller
-// holds run.mu.
+// bindRun verifies the session's policy bundle and binds the drun engine,
+// mounting the session's chosen host working directory (issue #296) if one was
+// provided at launch. It is fail-closed: no verified bundle → no bind → no run
+// (ADR-0004 §3), and a mount failure aborts the bind with a readable error. The
+// caller holds run.mu.
 func (s *Server) bindRun(ctx context.Context, run *runState) error {
 	if err := s.verify(run.launch.policyBundle, s.now()); err != nil {
 		return fmt.Errorf("policy bundle rejected: %w", err)
 	}
-	eng, err := bindEngine(ctx, s.dial, s.drunEndpoint, run.launch.policyBundle)
+	eng, err := bindEngine(ctx, s.dial, s.drunEndpoint, run.launch.policyBundle, run.launch.WorkingDir)
 	if err != nil {
 		return err
 	}
@@ -112,6 +114,7 @@ func (s *Server) runViewData(run *runState) views.RunData {
 		Expires:      orDash(ls.ExpiresAt),
 		Model:        s.model,
 		ModelMissing: s.model == "",
+		WorkingDir:   ls.WorkingDir,
 		EngineError:  run.bindErr,
 	}
 	if run.engine != nil {

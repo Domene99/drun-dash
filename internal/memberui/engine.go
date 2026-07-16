@@ -24,6 +24,11 @@ type drunConn interface {
 	Initialize(ctx context.Context) (*drunmcp.InitializeResult, error)
 	ListTools(ctx context.Context) (*drunmcp.ListToolsResult, error)
 	CreateSession(ctx context.Context) (string, error)
+	// SessionMount copies a host working directory into the fresh sandbox
+	// session so the agent works on real files and an explicit Commit can write
+	// back to that folder (issue #296). Mounting is a console concern, driven at
+	// bind time from the member's chosen path — never an agent tool call.
+	SessionMount(ctx context.Context, sessionID, path string) (*drunmcp.CallToolResult, error)
 	CallTool(ctx context.Context, name string, args any) (*drunmcp.CallToolResult, error)
 	SessionClose(ctx context.Context, sessionID string) error
 
@@ -80,11 +85,12 @@ type boundEngine struct {
 }
 
 // bindEngine dials the local drun engine, probes it with Initialize (drun-mcp
-// has no /health), creates a sandbox session, and prepares the tool set from
+// has no /health), creates a sandbox session, optionally mounts the member's
+// chosen host working directory into it, and prepares the tool set from
 // ListTools intersected with the policy bundle's allowed_tools (ADR-0004 §3–§4).
 // Any failure is fail-closed: the caller shows a clear error and refuses to run
 // a turn rather than degrading to anything ungoverned.
-func bindEngine(ctx context.Context, dial drunDialer, endpoint string, bundle json.RawMessage) (*boundEngine, error) {
+func bindEngine(ctx context.Context, dial drunDialer, endpoint string, bundle json.RawMessage, workingDir string) (*boundEngine, error) {
 	conn := dial(endpoint)
 	if _, err := conn.Initialize(ctx); err != nil {
 		return nil, fmt.Errorf("memberui: drun engine unreachable at %s: %w", endpoint, err)
@@ -92,6 +98,17 @@ func bindEngine(ctx context.Context, dial drunDialer, endpoint string, bundle js
 	sessionID, err := conn.CreateSession(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("memberui: create drun session: %w", err)
+	}
+	// Mount the member's chosen host working directory into the fresh session so
+	// the agent works on real files and the explicit diff-before-commit action
+	// writes back to that folder (issue #296). With no dir the session stays a
+	// scratch sandbox (the prior behavior). A mount failure is fail-closed: abort
+	// the bind with a readable error rather than silently running against a temp
+	// dir the member can never find.
+	if dir := strings.TrimSpace(workingDir); dir != "" {
+		if _, err := conn.SessionMount(ctx, sessionID, dir); err != nil {
+			return nil, fmt.Errorf("could not mount %s: %w", dir, err)
+		}
 	}
 	listed, err := conn.ListTools(ctx)
 	if err != nil {

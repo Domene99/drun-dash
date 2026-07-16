@@ -23,6 +23,12 @@ type fakeDrunConn struct {
 	calls  []fakeToolCall
 	closed bool
 
+	// Working-directory mount stubs (issue #296). mounted records every path the
+	// bind mounted (in order); mountErr forces a mount failure so the bind aborts
+	// with a readable error.
+	mounted  []string
+	mountErr error
+
 	// Checkpoint-timeline / diff-before-commit stubs (design §6.3).
 	historyText string
 	treeText    string
@@ -57,6 +63,14 @@ func (f *fakeDrunConn) CreateSession(context.Context) (string, error) {
 		return "drun-sess", nil
 	}
 	return f.sessionID, nil
+}
+
+func (f *fakeDrunConn) SessionMount(_ context.Context, _ string, path string) (*drunmcp.CallToolResult, error) {
+	if f.mountErr != nil {
+		return nil, f.mountErr
+	}
+	f.mounted = append(f.mounted, path)
+	return textResult("mounted"), nil
 }
 
 func (f *fakeDrunConn) CallTool(_ context.Context, name string, args any) (*drunmcp.CallToolResult, error) {
