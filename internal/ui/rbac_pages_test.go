@@ -82,6 +82,43 @@ func TestRolesPageRendersAndGates(t *testing.T) {
 	}
 }
 
+// TestRolesPageShowsBuiltinPermissionsReadOnly asserts an admin can see what a
+// built-in role grants (via a read-only "View permissions" panel) even though it
+// cannot be edited.
+func TestRolesPageShowsBuiltinPermissionsReadOnly(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /auth/whoami", whoamiHandler("roles.manage"))
+	mux.HandleFunc("GET /agents", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"items":[{"id":"a1","name":"Planner","created_at":"2026-07-01T00:00:00Z"}]}`))
+	})
+	mux.HandleFunc("GET /roles", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, rolesJSON())
+	})
+	s := newServerCP(t, mux)
+
+	rec := authedGet(t, s, "/roles")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// The built-in Owner role gets a read-only view of its permissions.
+	for _, want := range []string{
+		"View permissions",
+		`data-uk-modal-open="role-view-r-owner"`,
+		"Permissions — Owner",
+		"roles.manage", "agents.run", // the verbs Owner grants, in the panel
+		"disabled", // rendered read-only (non-editable) checkboxes
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("built-in read-only permissions view missing %q", want)
+		}
+	}
+	// The built-in role is not editable.
+	if strings.Contains(body, `data-uk-modal-open="role-edit-r-owner"`) {
+		t.Errorf("built-in role must not be editable")
+	}
+}
+
 func TestRolesPageViewOnlyWithoutPermission(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /auth/whoami", whoamiHandler("audit.view"))

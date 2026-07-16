@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/Domene99/drun-dash/internal/ui/views"
 )
@@ -206,7 +207,7 @@ func (s *Server) handleAgentNew(w http.ResponseWriter, r *http.Request) {
 		s.redirectToLogin(w, r)
 		return
 	}
-	data := views.AgentNewData{Chrome: chrome, FanOutCeiling: "0"}
+	data := views.AgentNewData{Chrome: chrome}
 	if !hasPermission(perms, permAgentsManage) {
 		data.NoAccess = true
 		s.render(w, r, http.StatusOK, views.AgentNew(data))
@@ -226,18 +227,13 @@ func (s *Server) handleAgentNew(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 	if err := r.ParseForm(); err != nil {
-		s.renderAgentNewError(w, r, token, views.AgentNewData{FanOutCeiling: "0"}, "Could not read the submitted form.")
+		s.renderAgentNewError(w, r, token, views.AgentNewData{}, "Could not read the submitted form.")
 		return
 	}
 	form := views.AgentNewData{
-		Name:          strings.TrimSpace(r.PostFormValue("name")),
-		Description:   strings.TrimSpace(r.PostFormValue("description")),
-		SystemPrompt:  r.PostFormValue("system_prompt"),
-		AllowedTools:  r.PostFormValue("allowed_tools"),
-		FanOutCeiling: strings.TrimSpace(r.PostFormValue("fan_out_ceiling")),
-	}
-	if form.FanOutCeiling == "" {
-		form.FanOutCeiling = "0"
+		Name:         strings.TrimSpace(r.PostFormValue("name")),
+		Description:  strings.TrimSpace(r.PostFormValue("description")),
+		SystemPrompt: r.PostFormValue("system_prompt"),
 	}
 	policyID := strings.TrimSpace(r.PostFormValue("default_policy_id"))
 	endpointID := strings.TrimSpace(r.PostFormValue("endpoint_id"))
@@ -250,11 +246,6 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	case strings.TrimSpace(form.SystemPrompt) == "":
 		s.renderAgentNewError(w, r, token, form, "A system prompt is required to publish version 1.")
-		return
-	}
-	fanOut, err := strconv.Atoi(form.FanOutCeiling)
-	if err != nil || fanOut < 0 {
-		s.renderAgentNewError(w, r, token, form, "Fan-out ceiling must be a whole number of 0 or more.")
 		return
 	}
 
@@ -281,12 +272,14 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 	if policyID != "" {
 		policyVersionID = s.latestPolicyVersionID(r.Context(), token, policyID)
 	}
+	// The policy boundary governs tools, network, and fan-out (ADR-0010), so the
+	// version is published with no tools and the default fan-out: identity +
+	// system prompt + policy + endpoint is all this form collects.
 	_, err = s.client.PublishAgentVersion(r.Context(), token, agent.ID, AgentVersionCreate{
 		SystemPrompt:    form.SystemPrompt,
-		AllowedTools:    parseToolList(form.AllowedTools),
+		AllowedTools:    []string{},
 		PolicyVersionID: policyVersionID,
 		EndpointID:      endpointID,
-		FanOutCeiling:   fanOut,
 		Notes:           "Initial version",
 	})
 	if errors.Is(err, ErrUnauthorized) {
@@ -320,6 +313,136 @@ func (s *Server) renderAgentNewError(w http.ResponseWriter, r *http.Request, tok
 		form.Endpoints = s.endpointOptions(r.Context(), token)
 	}
 	s.render(w, r, http.StatusOK, views.AgentNew(form))
+}
+
+// --- Agent edit ------------------------------------------------------------
+
+// handleAgentEdit renders the edit-agent form, gated on agents.manage. Without
+// that permission it renders a view-only notice (the control plane would reject
+// the update anyway). It loads the agent's current identity and default policy to
+// pre-fill the form, plus the policy/endpoint catalogs for the version-publish
+// selects, best-effort.
+func (s *Server) handleAgentEdit(w http.ResponseWriter, r *http.Request) {
+	token := tokenFromContext(r.Context())
+	agentID := chi.URLParam(r, "agentId")
+	chrome, perms, err := s.buildChrome(r.Context(), token, "agents", "Edit agent")
+	if err != nil {
+		s.redirectToLogin(w, r)
+		return
+	}
+	data := views.AgentEditData{Chrome: chrome, ID: agentID}
+	if !hasPermission(perms, permAgentsManage) {
+		data.NoAccess = true
+		s.render(w, r, http.StatusOK, views.AgentEdit(data))
+		return
+	}
+	agent, err := s.client.GetAgent(r.Context(), token, agentID)
+	if errors.Is(err, ErrUnauthorized) {
+		s.redirectToLogin(w, r)
+		return
+	}
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "admin-ui: get agent for edit failed", slog.Any("error", err))
+		data.Error = "Could not load agent: " + readableError(err)
+		s.render(w, r, http.StatusOK, views.AgentEdit(data))
+		return
+	}
+	data.Name = agent.Name
+	data.Description = agent.Description
+	data.PolicyID = agent.DefaultPolicyID
+	data.Policies = s.policyOptions(r.Context(), token)
+	data.Endpoints = s.endpointOptions(r.Context(), token)
+	s.render(w, r, http.StatusOK, views.AgentEdit(data))
+}
+
+// handleAgentEditSubmit updates an agent's identity (PATCH /agents/{id}) and,
+// when a system prompt is supplied, publishes a new immutable version pinning the
+// selected policy + endpoint (POST /agents/{id}/versions). Versions are
+// immutable, so a blank system prompt only renames (no new version). On success
+// it lands on the agent's detail page. Under policy-centric access the version is
+// published with no tools and the default fan-out; the policy governs the
+// boundary (ADR-0010). Requires agents.manage.
+func (s *Server) handleAgentEditSubmit(w http.ResponseWriter, r *http.Request) {
+	token := tokenFromContext(r.Context())
+	agentID := chi.URLParam(r, "agentId")
+	if err := r.ParseForm(); err != nil {
+		s.renderAgentEditError(w, r, token, views.AgentEditData{ID: agentID}, "Could not read the submitted form.")
+		return
+	}
+	form := views.AgentEditData{
+		ID:           agentID,
+		Name:         strings.TrimSpace(r.PostFormValue("name")),
+		Description:  strings.TrimSpace(r.PostFormValue("description")),
+		SystemPrompt: r.PostFormValue("system_prompt"),
+	}
+	policyID := strings.TrimSpace(r.PostFormValue("default_policy_id"))
+	endpointID := strings.TrimSpace(r.PostFormValue("endpoint_id"))
+	form.PolicyID = policyID
+	form.EndpointID = endpointID
+
+	if form.Name == "" {
+		s.renderAgentEditError(w, r, token, form, "An agent name is required.")
+		return
+	}
+
+	// Update identity. Both fields are sent so a cleared description clears it.
+	name := form.Name
+	description := form.Description
+	_, err := s.client.UpdateAgent(r.Context(), token, agentID, &name, &description)
+	if errors.Is(err, ErrUnauthorized) {
+		s.redirectToLogin(w, r)
+		return
+	}
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "admin-ui: update agent failed", slog.Any("error", err))
+		s.renderAgentEditError(w, r, token, form, "Could not update agent: "+readableError(err))
+		return
+	}
+
+	// Publish a new immutable version only when a system prompt is supplied.
+	if strings.TrimSpace(form.SystemPrompt) != "" {
+		policyVersionID := ""
+		if policyID != "" {
+			policyVersionID = s.latestPolicyVersionID(r.Context(), token, policyID)
+		}
+		_, err := s.client.PublishAgentVersion(r.Context(), token, agentID, AgentVersionCreate{
+			SystemPrompt:    form.SystemPrompt,
+			AllowedTools:    []string{},
+			PolicyVersionID: policyVersionID,
+			EndpointID:      endpointID,
+			Notes:           "Edited via admin UI",
+		})
+		if errors.Is(err, ErrUnauthorized) {
+			s.redirectToLogin(w, r)
+			return
+		}
+		if err != nil {
+			s.logger.ErrorContext(r.Context(), "admin-ui: publish agent version on edit failed", slog.Any("error", err))
+			s.renderAgentEditError(w, r, token, form, "Agent updated, but publishing a new version failed: "+readableError(err))
+			return
+		}
+	}
+	http.Redirect(w, r, "/agents/"+agentID, http.StatusSeeOther)
+}
+
+// renderAgentEditError re-renders the edit-agent form with a message after a
+// failed submit, rebuilding the chrome and policy/endpoint options and preserving
+// the submitted field values.
+func (s *Server) renderAgentEditError(w http.ResponseWriter, r *http.Request, token string, form views.AgentEditData, msg string) {
+	chrome, perms, err := s.buildChrome(r.Context(), token, "agents", "Edit agent")
+	if err != nil {
+		s.redirectToLogin(w, r)
+		return
+	}
+	form.Chrome = chrome
+	form.Error = msg
+	if !hasPermission(perms, permAgentsManage) {
+		form.NoAccess = true
+	} else {
+		form.Policies = s.policyOptions(r.Context(), token)
+		form.Endpoints = s.endpointOptions(r.Context(), token)
+	}
+	s.render(w, r, http.StatusOK, views.AgentEdit(form))
 }
 
 // policyOptions lists the org's policies for the agent form's default-policy

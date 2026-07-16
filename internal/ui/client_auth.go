@@ -127,6 +127,25 @@ func (c *Client) CreateAgent(ctx context.Context, token string, req AgentCreate)
 	return &agent, nil
 }
 
+// AgentUpdate is the PATCH /agents/{agentId} body (the apiAgentUpdate schema):
+// a partial identity update. Both fields are optional pointers so an unset field
+// is omitted from the request and left unchanged server-side.
+type AgentUpdate struct {
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+}
+
+// UpdateAgent calls PATCH /agents/{agentId} with the supplied partial update and
+// returns the updated agent. Requires agents.manage.
+func (c *Client) UpdateAgent(ctx context.Context, token, id string, name, description *string) (*Agent, error) {
+	var agent Agent
+	path := "/agents/" + url.PathEscape(id)
+	if err := c.patchJSON(ctx, token, path, AgentUpdate{Name: name, Description: description}, &agent); err != nil {
+		return nil, err
+	}
+	return &agent, nil
+}
+
 // AgentVersionCreate is the POST /agents/{id}/versions body (the
 // AgentVersionCreate schema): the immutable version manifest. SystemPrompt is
 // required; the endpoint/budget/policy-version pins are optional and can be set

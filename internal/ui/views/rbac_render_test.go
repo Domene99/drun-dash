@@ -18,7 +18,7 @@ func TestRenderRolesBuiltinReadOnlyAndPrefill(t *testing.T) {
 		Permissions: []PermissionOption{{Key: "agents.run", Description: "run"}, {Key: "roles.manage", Description: "roles"}},
 		Agents:      []AgentOption{{ID: "a1", Name: "Planner"}},
 		Roles: []RoleView{
-			{ID: "r-owner", Name: "Owner", Builtin: true, PermissionCount: "9", AllAgents: true, AccessSummary: "All agents"},
+			{ID: "r-owner", Name: "Owner", Builtin: true, PermissionCount: "9", PermissionKeys: []string{"roles.manage"}, AllAgents: true, AccessSummary: "All agents"},
 			{ID: "r-deploy", Name: "Deployer", Builtin: false, PermissionCount: "1", PermissionKeys: []string{"agents.run"}, AgentIDs: []string{"a1"}, AccessSummary: "1 agent"},
 		},
 	}))
@@ -27,10 +27,43 @@ func TestRenderRolesBuiltinReadOnlyAndPrefill(t *testing.T) {
 		"Planner", // agent option in the forms
 		`data-uk-modal-open="role-edit-r-deploy"`, `data-uk-modal-open="role-delete-r-deploy"`,
 		"checked", // the edit form pre-checks the custom role's held permission/agent
+		// The built-in role is viewable read-only (see what it grants).
+		`data-uk-modal-open="role-view-r-owner"`, "View permissions", "Permissions — Owner",
 	)
-	// The built-in role gets no edit/delete controls.
-	if strings.Contains(body, `data-uk-modal-open="role-edit-r-owner"`) {
-		t.Errorf("built-in role must be read-only")
+	// The built-in role gets no edit/delete controls, but IS viewable read-only.
+	if strings.Contains(body, `data-uk-modal-open="role-edit-r-owner"`) || strings.Contains(body, `data-uk-modal-open="role-delete-r-owner"`) {
+		t.Errorf("built-in role must not be editable")
+	}
+	// The built-in read-only view renders its granted permissions as disabled
+	// (read-only) checkboxes.
+	if !strings.Contains(body, "disabled") {
+		t.Errorf("built-in role view must render read-only (disabled) permission checkboxes:\n%s", body)
+	}
+}
+
+func TestRenderRolesAllAgentsGraysAndChecksList(t *testing.T) {
+	body := render(t, Roles(RolesData{
+		Chrome:      sampleChrome("roles"),
+		CanManage:   true,
+		Permissions: []PermissionOption{{Key: "agents.run", Description: "run"}},
+		Agents:      []AgentOption{{ID: "a1", Name: "Planner"}, {ID: "a2", Name: "Reviewer"}},
+		Roles: []RoleView{
+			// A custom all-agents role: its per-agent list is checked + greyed.
+			{ID: "r-all", Name: "All", Builtin: false, PermissionCount: "1", AllAgents: true, AccessSummary: "All agents"},
+		},
+	}))
+	mustContain(t, body,
+		// The all-agents toggle wires the per-agent list for the live script.
+		`data-all-agents-toggle`, `data-agent-list="role-edit-r-all-agent-list"`,
+		`id="role-edit-r-all-agent-list"`,
+		// Server-rendered greyed container (correct even with JS off).
+		"uk-agent-checklist-disabled",
+		// The tiny inline vanilla toggle script (no framework).
+		"addEventListener", "querySelectorAll",
+	)
+	// With all-agents on, each per-agent checkbox is server-rendered checked+disabled.
+	if !strings.Contains(body, "checked") || !strings.Contains(body, "disabled") {
+		t.Errorf("all-agents role must render its per-agent list checked and disabled:\n%s", body)
 	}
 }
 
@@ -74,7 +107,9 @@ func TestRenderAgentDetailReadOnly(t *testing.T) {
 		CanManage: true,
 	}))
 	mustContain(t, body, "Planner", "plans", "Production", `href="/policies/p1"`,
-		`data-uk-copy="sha256:abc123def"`, "Owner", "Back to agents", "Edit")
+		`data-uk-copy="sha256:abc123def"`, "Owner", "Back to agents",
+		// The Edit affordance links to the edit-agent form (agents.manage).
+		"Edit", `href="/agents/a1/edit"`)
 
 	// A caller without agents.manage gets no Edit affordance, and the
 	// role-access note replaces the list when roles.manage is absent.
@@ -83,8 +118,39 @@ func TestRenderAgentDetailReadOnly(t *testing.T) {
 		AccessNote: "Viewing which roles grant this agent requires the roles.manage permission.",
 	}))
 	mustContain(t, note, "roles.manage")
-	if strings.Contains(note, ">Edit</button>") {
+	if strings.Contains(note, `href="/agents/a1/edit"`) {
 		t.Errorf("Edit affordance must be hidden without agents.manage")
+	}
+}
+
+func TestRenderAgentEditForm(t *testing.T) {
+	body := render(t, AgentEdit(AgentEditData{
+		Chrome: sampleChrome("agents"), ID: "a1", Name: "Planner", Description: "plans",
+		Policies:   []PolicyOption{{ID: "p1", Name: "Prod"}},
+		Endpoints:  []EndpointOption{{ID: "e1", Name: "Anthropic prod"}},
+		PolicyID:   "p1",
+		EndpointID: "e1",
+	}))
+	mustContain(t, body,
+		"Edit agent", `action="/agents/a1/edit"`, "Save changes",
+		`name="name"`, "Planner", `name="description"`, `name="system_prompt"`,
+		`name="default_policy_id"`, `name="endpoint_id"`, "Prod", "Anthropic prod",
+		// The policy governs the boundary; the form says so and drops tools/fan-out.
+		"Tools, network, and concurrency are governed by the selected policy.",
+	)
+	if !strings.Contains(body, `value="p1" selected`) || !strings.Contains(body, `value="e1" selected`) {
+		t.Errorf("edit form must preselect the agent's policy and endpoint:\n%s", body)
+	}
+	if strings.Contains(body, `name="allowed_tools"`) || strings.Contains(body, `name="fan_out_ceiling"`) {
+		t.Errorf("edit form must not collect tools or fan-out:\n%s", body)
+	}
+}
+
+func TestRenderAgentEditNoAccess(t *testing.T) {
+	body := render(t, AgentEdit(AgentEditData{Chrome: sampleChrome("agents"), ID: "a1", NoAccess: true}))
+	mustContain(t, body, "No access", "agents.manage")
+	if strings.Contains(body, `name="system_prompt"`) {
+		t.Errorf("edit form must be hidden without agents.manage")
 	}
 }
 

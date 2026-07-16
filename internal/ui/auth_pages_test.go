@@ -434,13 +434,20 @@ func TestNewAgentPageShowsFormWithPermission(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"New agent",
-		`name="name"`, `name="system_prompt"`, `name="allowed_tools"`,
-		`name="fan_out_ceiling"`, `name="default_policy_id"`,
+		`name="name"`, `name="system_prompt"`, `name="default_policy_id"`,
+		`name="endpoint_id"`,
 		"Default",              // policy option
 		"pin a model endpoint", // the run-requirement note
+		"Tools, network, and concurrency are governed by the selected policy.",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("new-agent page missing %q", want)
+		}
+	}
+	// The policy owns the boundary now — the form no longer collects tools/fan-out.
+	for _, gone := range []string{`name="allowed_tools"`, `name="fan_out_ceiling"`} {
+		if strings.Contains(body, gone) {
+			t.Errorf("new-agent page must not collect %q", gone)
 		}
 	}
 }
@@ -483,8 +490,6 @@ func TestAgentCreatePublishesVersionAndRedirects(t *testing.T) {
 	form.Set("name", "Release Bot")
 	form.Set("description", "Ships releases")
 	form.Set("system_prompt", "You are a release bot.")
-	form.Set("allowed_tools", "search, fetch\ndeploy")
-	form.Set("fan_out_ceiling", "3")
 	form.Set("default_policy_id", "p1")
 	rec := authedPostForm(t, s, "/agents", form)
 
@@ -508,11 +513,13 @@ func TestAgentCreatePublishesVersionAndRedirects(t *testing.T) {
 	if gotVer.SystemPrompt != "You are a release bot." {
 		t.Errorf("version system_prompt = %q", gotVer.SystemPrompt)
 	}
-	if gotVer.FanOutCeiling != 3 {
-		t.Errorf("version fan_out_ceiling = %d, want 3", gotVer.FanOutCeiling)
+	// The policy governs the boundary (ADR-0010): the version publishes with the
+	// default fan-out and no tools.
+	if gotVer.FanOutCeiling != 0 {
+		t.Errorf("version fan_out_ceiling = %d, want 0 (policy governs it)", gotVer.FanOutCeiling)
 	}
-	if len(gotVer.AllowedTools) != 3 || gotVer.AllowedTools[0] != "search" || gotVer.AllowedTools[1] != "fetch" || gotVer.AllowedTools[2] != "deploy" {
-		t.Errorf("version allowed_tools = %v", gotVer.AllowedTools)
+	if len(gotVer.AllowedTools) != 0 {
+		t.Errorf("version allowed_tools = %v, want none (policy governs tools)", gotVer.AllowedTools)
 	}
 }
 
@@ -568,6 +575,172 @@ func TestAgentsListHidesNewAgentButtonWithoutPermission(t *testing.T) {
 	}
 }
 
+// --- Edit agent form + update ----------------------------------------------
+
+func TestAgentEditPageShowsFormWithPermission(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /auth/whoami", whoamiHandler("agents.manage"))
+	mux.HandleFunc("GET /agents/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"ag-1","name":"Planner","description":"plans","default_policy_id":"p1","created_at":"2026-07-01T00:00:00Z"}`))
+	})
+	mux.HandleFunc("GET /policies", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"items":[{"id":"p1","name":"Prod","current_version":1,"created_at":"2026-07-01T00:00:00Z"}]}`))
+	})
+	mux.HandleFunc("GET /model-endpoints", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"items":[{"id":"e1","name":"Anthropic prod","provider":"anthropic","created_at":"2026-07-01T00:00:00Z"}]}`))
+	})
+	s := newServerCP(t, mux)
+
+	rec := authedGet(t, s, "/agents/ag-1/edit")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Edit agent", `action="/agents/ag-1/edit"`, "Save changes",
+		`name="name"`, "Planner", `name="system_prompt"`, `name="default_policy_id"`, `name="endpoint_id"`,
+		"Prod", "Anthropic prod",
+		"Tools, network, and concurrency are governed by the selected policy.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("edit-agent page missing %q", want)
+		}
+	}
+	// The agent's default policy is preselected.
+	if !strings.Contains(body, `value="p1" selected`) {
+		t.Errorf("edit form must preselect the agent's default policy:\n%s", body)
+	}
+	// Tools/fan-out are governed by the policy, not collected here.
+	for _, gone := range []string{`name="allowed_tools"`, `name="fan_out_ceiling"`} {
+		if strings.Contains(body, gone) {
+			t.Errorf("edit-agent page must not collect %q", gone)
+		}
+	}
+}
+
+func TestAgentEditPageNoAccessWithoutPermission(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /auth/whoami", whoamiHandler("audit.view"))
+	s := newServerCP(t, mux)
+
+	rec := authedGet(t, s, "/agents/ag-1/edit")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "No access") {
+		t.Errorf("expected a no-access notice without agents.manage")
+	}
+}
+
+func TestAgentEditUpdatesIdentityAndPublishesVersion(t *testing.T) {
+	var patchBody, versionBody []byte
+	patched, published := false, false
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /auth/whoami", whoamiHandler("agents.manage"))
+	mux.HandleFunc("PATCH /agents/{id}", func(w http.ResponseWriter, r *http.Request) {
+		patched = true
+		patchBody, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"id":"ag-1","name":"Planner v2","description":"replans","created_at":"2026-07-01T00:00:00Z"}`))
+	})
+	mux.HandleFunc("GET /policies/{id}/versions", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"items":[{"id":"pv-1","policy_id":"p1","version":1,"digest":"d1","signing":{"algorithm":"ed25519","key_id":"k","signature":"s"},"created_at":"2026-07-01T00:00:00Z"}]}`))
+	})
+	mux.HandleFunc("POST /agents/{id}/versions", func(w http.ResponseWriter, r *http.Request) {
+		published = true
+		versionBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"agent_id":"ag-1","version":2,"created_at":"2026-07-02T00:00:00Z"}`))
+	})
+	s := newServerCP(t, mux)
+
+	form := url.Values{}
+	form.Set("name", "Planner v2")
+	form.Set("description", "replans")
+	form.Set("system_prompt", "You are Planner v2.")
+	form.Set("default_policy_id", "p1")
+	form.Set("endpoint_id", "e1")
+	rec := authedPostForm(t, s, "/agents/ag-1/edit", form)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303; body=%s", rec.Code, rec.Body.String())
+	}
+	if loc := rec.Header().Get("Location"); loc != "/agents/ag-1" {
+		t.Errorf("Location = %q, want /agents/ag-1", loc)
+	}
+	if !patched {
+		t.Errorf("expected a PATCH /agents/{id} to update identity")
+	}
+	var gotPatch AgentUpdate
+	if err := json.Unmarshal(patchBody, &gotPatch); err != nil {
+		t.Fatalf("decode patch body: %v (%s)", err, patchBody)
+	}
+	if gotPatch.Name == nil || *gotPatch.Name != "Planner v2" || gotPatch.Description == nil || *gotPatch.Description != "replans" {
+		t.Errorf("patch body = %+v", gotPatch)
+	}
+	if !published {
+		t.Fatalf("expected a new version to be published when a system prompt is supplied")
+	}
+	var gotVer AgentVersionCreate
+	if err := json.Unmarshal(versionBody, &gotVer); err != nil {
+		t.Fatalf("decode version body: %v (%s)", err, versionBody)
+	}
+	if gotVer.SystemPrompt != "You are Planner v2." {
+		t.Errorf("version system_prompt = %q", gotVer.SystemPrompt)
+	}
+	if gotVer.EndpointID != "e1" || gotVer.PolicyVersionID != "pv-1" {
+		t.Errorf("version pins endpoint=%q policy_version=%q, want e1/pv-1", gotVer.EndpointID, gotVer.PolicyVersionID)
+	}
+	// The policy governs the boundary: no tools, default fan-out.
+	if len(gotVer.AllowedTools) != 0 || gotVer.FanOutCeiling != 0 {
+		t.Errorf("version must publish with no tools and default fan-out; got tools=%v fanout=%d", gotVer.AllowedTools, gotVer.FanOutCeiling)
+	}
+}
+
+func TestAgentEditRenameOnlySkipsVersionPublish(t *testing.T) {
+	patched := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /auth/whoami", whoamiHandler("agents.manage"))
+	mux.HandleFunc("PATCH /agents/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		patched = true
+		_, _ = w.Write([]byte(`{"id":"ag-1","name":"Renamed","created_at":"2026-07-01T00:00:00Z"}`))
+	})
+	mux.HandleFunc("POST /agents/{id}/versions", func(http.ResponseWriter, *http.Request) {
+		t.Errorf("a blank system prompt must not publish a new version")
+	})
+	s := newServerCP(t, mux)
+
+	form := url.Values{}
+	form.Set("name", "Renamed")
+	form.Set("system_prompt", "   ") // blank → no new version
+	rec := authedPostForm(t, s, "/agents/ag-1/edit", form)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303; body=%s", rec.Code, rec.Body.String())
+	}
+	if !patched {
+		t.Errorf("rename must still PATCH the agent identity")
+	}
+}
+
+func TestAgentEditRequiresName(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /auth/whoami", whoamiHandler("agents.manage"))
+	mux.HandleFunc("PATCH /agents/{id}", func(http.ResponseWriter, *http.Request) {
+		t.Errorf("agent must not be updated without a name")
+	})
+	s := newServerCP(t, mux)
+
+	form := url.Values{}
+	form.Set("name", "")
+	rec := authedPostForm(t, s, "/agents/ag-1/edit", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (re-rendered form)", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "name is required") {
+		t.Errorf("expected a name-required message")
+	}
+}
+
 // --- Auth gating for the new authenticated routes --------------------------
 
 func TestNewAuthedRoutesRedirectUnauthenticated(t *testing.T) {
@@ -578,6 +751,8 @@ func TestNewAuthedRoutesRedirectUnauthenticated(t *testing.T) {
 	}{
 		{http.MethodGet, "/agents/new"},
 		{http.MethodPost, "/agents"},
+		{http.MethodGet, "/agents/ag-1/edit"},
+		{http.MethodPost, "/agents/ag-1/edit"},
 		{http.MethodPost, "/members/invite"},
 	}
 	for _, tc := range cases {

@@ -76,8 +76,9 @@ summary, not a JWT-claims dump).
   (`POST /auth/signup`), `Login` (`POST /auth/login`), and `AcceptInvite`
   (`POST /auth/accept-invite`), all public and returning a session token;
   `InviteMember` (`POST /members/invite`); the agent-authoring helpers
-  `CreateAgent` (`POST /agents`) and `PublishAgentVersion`
-  (`POST /agents/{id}/versions`); `ExchangeSession` (`POST /auth/session`,
+  `CreateAgent` (`POST /agents`), `UpdateAgent` (`PATCH /agents/{id}`, name +
+  description), and `PublishAgentVersion` (`POST /agents/{id}/versions`);
+  `ExchangeSession` (`POST /auth/session`,
   unauthenticated — trades the OIDC ID token for a session JWT); and
   `ApproveDevice` (`POST /auth/device/approve` — approves/denies a CLI device
   request with the member's Bearer token); and the policy permitted-roles
@@ -127,7 +128,16 @@ summary, not a JWT-claims dump).
     returned invite link surfaced to copy (no mailer in local dev).
   - `GET /agents/new` + `POST /agents` — the create-agent form (requires
     `agents.manage`): `POST /agents` then `POST /agents/{id}/versions` to publish
-    version 1, then land on the agent detail page.
+    version 1, then land on the agent detail page. The form collects only
+    identity + system prompt + policy + endpoint; **tools, network, and fan-out
+    are governed by the selected policy** (ADR-0010), so the version is published
+    with no tools and the default fan-out.
+  - `GET /agents/{agentId}/edit` + `POST /agents/{agentId}/edit` — the edit-agent
+    form (requires `agents.manage`): update identity via `PATCH /agents/{id}`,
+    and — when a system prompt is supplied — publish a new immutable version
+    (`POST /agents/{id}/versions`) pinning the selected policy + endpoint. A blank
+    system prompt only renames (versions are immutable). Lands on the agent
+    detail page.
   - `POST /policies` — create a policy (and its version 1); the handler then
     applies the selected permitted roles via `PUT /policies/{id}/roles`.
   - `POST /policies/{policyId}/roles` — replace a policy's permitted roles from
