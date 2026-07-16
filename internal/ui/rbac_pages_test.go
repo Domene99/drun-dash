@@ -370,13 +370,13 @@ func TestPolicyDetailShowsVersions(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"p1","name":"Production","description":"prod boundary","current_version":3,"created_at":"2026-07-01T00:00:00Z"}`))
 	})
 	mux.HandleFunc("GET /policies/{policyId}/versions", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"items":[{"policy_id":"p1","version":3,"digest":"sha256:deadbeef99","signing":{"algorithm":"ed25519","key_id":"key-1"},"created_at":"2026-07-03T00:00:00Z"}]}`))
+		_, _ = w.Write([]byte(`{"items":[{"policy_id":"p1","version":3,"digest":"sha256:deadbeef99","boundary":{"network":"allowlist","rules":{"network_allowlist":["api.anthropic.com","example.com"]}},"signing":{"algorithm":"ed25519","key_id":"key-1"},"created_at":"2026-07-03T00:00:00Z"}]}`))
 	})
 	s := newServerCP(t, mux)
 
 	rec := authedGet(t, s, "/policies/p1")
 	body := rec.Body.String()
-	for _, want := range []string{"Production", "prod boundary", "ed25519", "key-1", `data-uk-copy="sha256:deadbeef99"`, "Back to policies"} {
+	for _, want := range []string{"Production", "prod boundary", "ed25519", "key-1", `data-uk-copy="sha256:deadbeef99"`, "Back to policies", "api.anthropic.com, example.com"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("policy detail missing %q", want)
 		}
@@ -449,6 +449,82 @@ func TestPolicyCreateSetsPermittedRoles(t *testing.T) {
 	}
 	if len(got.RoleIDs) != 2 {
 		t.Errorf("role_ids = %v, want two", got.RoleIDs)
+	}
+}
+
+// TestPolicyCreateSetsNetworkAllowlist asserts that the allowed-hosts textarea is
+// parsed (newline/comma separated, blanks dropped) into the created boundary's
+// rules.network_allowlist, so an admin can pre-authorize egress with no approval.
+func TestPolicyCreateSetsNetworkAllowlist(t *testing.T) {
+	var gotBody []byte
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /auth/whoami", whoamiHandler("policies.manage"))
+	mux.HandleFunc("POST /policies", func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"id":"p9","name":"Egress","current_version":1,"created_at":"2026-07-01T00:00:00Z"}`))
+	})
+	s := newServerCP(t, mux)
+
+	form := url.Values{}
+	form.Set("name", "Egress")
+	form.Set("network", "allowlist")
+	form.Set("network_allowlist", "api.anthropic.com\n , example.com\n\n")
+	rec := authedPostForm(t, s, "/policies", form)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
+	}
+	var got struct {
+		Boundary struct {
+			Rules map[string]any `json:"rules"`
+		} `json:"boundary"`
+	}
+	if err := json.Unmarshal(gotBody, &got); err != nil {
+		t.Fatalf("decode body: %v (%s)", err, gotBody)
+	}
+	raw, ok := got.Boundary.Rules["network_allowlist"].([]any)
+	if !ok {
+		t.Fatalf("network_allowlist = %v, want a string array", got.Boundary.Rules["network_allowlist"])
+	}
+	hosts := make([]string, len(raw))
+	for i, v := range raw {
+		hosts[i], _ = v.(string)
+	}
+	if len(hosts) != 2 || hosts[0] != "api.anthropic.com" || hosts[1] != "example.com" {
+		t.Errorf("network_allowlist = %v, want [api.anthropic.com example.com]", hosts)
+	}
+}
+
+// TestPolicyCreateOmitsEmptyNetworkAllowlist asserts an empty allowed-hosts field
+// leaves the boundary's rules unset (a clean boundary), not an empty array.
+func TestPolicyCreateOmitsEmptyNetworkAllowlist(t *testing.T) {
+	var gotBody []byte
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /auth/whoami", whoamiHandler("policies.manage"))
+	mux.HandleFunc("POST /policies", func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"id":"p9","name":"Plain","current_version":1,"created_at":"2026-07-01T00:00:00Z"}`))
+	})
+	s := newServerCP(t, mux)
+
+	form := url.Values{}
+	form.Set("name", "Plain")
+	form.Set("network_allowlist", "   \n , \n")
+	rec := authedPostForm(t, s, "/policies", form)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
+	}
+	var got struct {
+		Boundary struct {
+			Rules map[string]any `json:"rules"`
+		} `json:"boundary"`
+	}
+	if err := json.Unmarshal(gotBody, &got); err != nil {
+		t.Fatalf("decode body: %v (%s)", err, gotBody)
+	}
+	if got.Boundary.Rules != nil {
+		t.Errorf("boundary.rules = %v, want unset for an empty allowlist", got.Boundary.Rules)
 	}
 }
 

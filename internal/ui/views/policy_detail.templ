@@ -1,6 +1,10 @@
 package views
 
-import "github.com/Domene99/drun-dash/internal/uikit"
+import (
+	"strings"
+
+	"github.com/Domene99/drun-dash/internal/uikit"
+)
 
 // Policies renders the policy catalog list — the entry point into the read-only
 // policy detail views. Each policy is shown by name (linking to its detail),
@@ -88,6 +92,9 @@ templ policyCreateModal(roles []RoleOption) {
 					<option value="unrestricted">unrestricted</option>
 				}
 			}
+			@uikit.Field(uikit.FieldConfig{Label: "Allowed hosts", For: "policy-network-allowlist", Help: "Domains agents under this policy may reach when Network = allowlist (e.g. api.anthropic.com), one per line or comma-separated. Pre-authorized by you — no approval needed. Ignored unless Network is 'allowlist'."}) {
+				@uikit.Textarea(uikit.TextareaConfig{ID: "policy-network-allowlist", Name: "network_allowlist", Rows: 3, Placeholder: "api.anthropic.com"})
+			}
 			@uikit.Field(uikit.FieldConfig{Label: "Fan-out ceiling", For: "policy-fan-out", Help: "Default ceiling on concurrent sub-agents. Leave blank for the engine default."}) {
 				@uikit.Input(uikit.InputConfig{ID: "policy-fan-out", Name: "fan_out_ceiling", Type: "number", Attrs: templ.Attributes{"min": "0", "step": "1"}})
 			}
@@ -157,6 +164,7 @@ templ PolicyDetail(data PolicyDetailData) {
 								<th>Digest</th>
 								<th>Algorithm</th>
 								<th>Key ID</th>
+								<th>Allowed hosts</th>
 								<th>Created</th>
 							</tr>
 						</thead>
@@ -173,6 +181,13 @@ templ PolicyDetail(data PolicyDetailData) {
 									</td>
 									<td>{ orDash(v.Algorithm) }</td>
 									<td>{ orDash(v.KeyID) }</td>
+									<td>
+										if len(v.AllowedHosts) == 0 {
+											<span class="uk-muted">—</span>
+										} else {
+											{ strings.Join(v.AllowedHosts, ", ") }
+										}
+									</td>
 									<td>
 										@uikit.RelativeTime(uikit.RelativeTimeConfig{Relative: v.Created.Relative, Absolute: v.Created.Absolute})
 									</td>

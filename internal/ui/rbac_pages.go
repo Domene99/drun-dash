@@ -510,6 +510,13 @@ func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		boundary.FanOutCeiling = &n
 	}
+	// Pre-authorized egress hosts. Persist them whenever any are supplied,
+	// regardless of the network posture — the engine applies the allowlist only
+	// when network=allowlist (internal/policycompile). Leaving Rules unset for an
+	// empty list keeps the boundary clean.
+	if hosts := parseToolList(r.PostFormValue("network_allowlist")); len(hosts) > 0 {
+		boundary.Rules = map[string]any{"network_allowlist": toAnySlice(hosts)}
+	}
 	body := PolicyCreate{
 		Name:        name,
 		Description: strings.TrimSpace(r.PostFormValue("description")),
@@ -903,12 +910,47 @@ func policyVersionRows(versions []PolicyVersion, now time.Time) []views.PolicyVe
 	out := make([]views.PolicyVersionRow, 0, len(versions))
 	for _, v := range versions {
 		out = append(out, views.PolicyVersionRow{
-			Version:   strconv.Itoa(v.Version),
-			Digest:    v.Digest,
-			Algorithm: v.Signing.Algorithm,
-			KeyID:     v.Signing.KeyID,
-			Created:   relativeTime(now, v.CreatedAt),
+			Version:      strconv.Itoa(v.Version),
+			Digest:       v.Digest,
+			Algorithm:    v.Signing.Algorithm,
+			KeyID:        v.Signing.KeyID,
+			AllowedHosts: boundaryAllowlistHosts(v.Boundary.Rules),
+			Created:      relativeTime(now, v.CreatedAt),
 		})
+	}
+	return out
+}
+
+// boundaryAllowlistHosts reads the pre-authorized egress hosts out of a policy
+// boundary's free-form rules. It is defensive: the key may be absent, and the
+// value decodes from JSON as a []any of strings, so anything else is ignored.
+func boundaryAllowlistHosts(rules map[string]any) []string {
+	raw, ok := rules["network_allowlist"]
+	if !ok {
+		return nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		if h, ok := it.(string); ok {
+			if h = strings.TrimSpace(h); h != "" {
+				out = append(out, h)
+			}
+		}
+	}
+	return out
+}
+
+// toAnySlice widens a []string to the []any a free-form rules map holds, so the
+// saved allowlist round-trips through JSON as an array (matching how the engine
+// reads boundary.rules["network_allowlist"]).
+func toAnySlice(ss []string) []any {
+	out := make([]any, len(ss))
+	for i, v := range ss {
+		out[i] = v
 	}
 	return out
 }
