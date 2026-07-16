@@ -359,12 +359,12 @@ func (s *Server) handleTeams(w http.ResponseWriter, r *http.Request) {
 // read-only agent detail views.
 func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
-	chrome, _, err := s.buildChrome(r.Context(), token, "agents", "Agents")
+	chrome, perms, err := s.buildChrome(r.Context(), token, "agents", "Agents")
 	if err != nil {
 		s.redirectToLogin(w, r)
 		return
 	}
-	data := views.AgentsData{Chrome: chrome}
+	data := views.AgentsData{Chrome: chrome, CanManage: hasPermission(perms, permAgentsManage)}
 	agents, err := s.client.ListAgents(r.Context(), token)
 	switch {
 	case errors.Is(err, ErrUnauthorized):

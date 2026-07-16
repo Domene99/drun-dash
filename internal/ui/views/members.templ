@@ -12,6 +12,7 @@ templ Members(data MembersData) {
 		@uikit.PageHeader(uikit.PageHeaderConfig{
 			Title:       "Members",
 			Description: "People in your organization and the roles assigned to them.",
+			Action:      membersHeaderAction(data),
 		})
 		if data.NoAccess {
 			@uikit.Card(uikit.CardConfig{}) {
@@ -20,6 +21,14 @@ templ Members(data MembersData) {
 				}
 			}
 		} else {
+			if data.InviteLink != "" {
+				@uikit.Card(uikit.CardConfig{}) {
+					@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantSuccess, Title: "Invitation created"}) {
+						<p>Share this link with { orDash(data.InviteEmail) } so they can set a password and join. In local development it is not emailed — copy it and hand it off.</p>
+						@uikit.IDChip(uikit.IDChipConfig{Label: "Invite link", ID: data.InviteLink, Display: data.InviteLink})
+					}
+				}
+			}
 			@uikit.Card(uikit.CardConfig{}) {
 				if data.Error != "" {
 					@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
@@ -78,6 +87,7 @@ templ Members(data MembersData) {
 				}
 			}
 			if data.CanManage {
+				@memberInviteModal(data.Roles)
 				for _, m := range data.Members {
 					@memberRolesModal(m, data.Roles)
 				}
@@ -123,6 +133,47 @@ templ memberRolesModal(m MemberView, roles []RoleOption) {
 				}
 				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
 					Save roles
+				}
+			</div>
+		</form>
+	}
+}
+
+// membersHeaderAction renders the Invite-member button, but only when the caller
+// may manage members (members.manage); otherwise it renders nothing.
+templ membersHeaderAction(data MembersData) {
+	if data.CanManage {
+		@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Attrs: templ.Attributes{"data-uk-modal-open": "member-invite"}}) {
+			Invite member
+		}
+	}
+}
+
+// memberInviteModal renders the Invite-member dialog: an email plus a checklist
+// of the org's roles to assign the invitee on acceptance. It posts to
+// /members/invite (POST /members/invite), which returns an invite link the page
+// then surfaces for the admin to hand off (no mailer in local dev).
+templ memberInviteModal(roles []RoleOption) {
+	@uikit.Modal(uikit.ModalConfig{ID: "member-invite", Title: "Invite member"}) {
+		<form method="post" action="/members/invite">
+			@uikit.Field(uikit.FieldConfig{Label: "Email", For: "invite-email", Required: true}) {
+				@uikit.Input(uikit.InputConfig{ID: "invite-email", Name: "email", Type: "email", Placeholder: "teammate@example.com", Attrs: templ.Attributes{"required": true}})
+			}
+			@uikit.Field(uikit.FieldConfig{Label: "Roles", Help: "Roles assigned to the member when they accept the invitation."}) {
+				if len(roles) == 0 {
+					<p class="uk-muted">No roles available to assign.</p>
+				} else {
+					for _, r := range roles {
+						@uikit.Check(uikit.CheckConfig{Name: "role_ids", Value: r.ID, Label: r.Name})
+					}
+				}
+			}
+			<div class="uk-modal-footer">
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Attrs: templ.Attributes{"data-uk-modal-close": true}}) {
+					Cancel
+				}
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
+					Send invitation
 				}
 			</div>
 		</form>

@@ -75,6 +75,11 @@ type MembersData struct {
 	CanManage bool
 	Members   []MemberView
 	Roles     []RoleOption
+	// InviteLink, when set, holds the accept-invite link surfaced after a
+	// successful "Invite member" so the admin can copy and hand it off (no
+	// mailer in local dev); InviteEmail names who it is for.
+	InviteLink  string
+	InviteEmail string
 }
 
 // MemberView is one row of the Members table plus the state its assign-roles
@@ -115,6 +120,8 @@ type AgentsData struct {
 	Chrome Chrome
 	Error  string
 	Agents []AgentListRow
+	// CanManage gates the "New agent" header action (agents.manage).
+	CanManage bool
 }
 
 // AgentListRow is one row of the Agents catalog table.

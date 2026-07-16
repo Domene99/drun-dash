@@ -2,10 +2,12 @@ package views
 
 import "github.com/Domene99/drun-dash/internal/uikit"
 
-// Login renders the sign-in page in the sidebar-less [Minimal] shell. With OIDC
-// configured the operator is normally redirected straight to the identity
-// provider by GET /login; this page offers a retry button after a failed
-// callback. Without OIDC it renders the paste-a-token dev form.
+// Login renders the sign-in page in the sidebar-less [Minimal] shell. The
+// primary form is the local password sign-in (org slug + email + password →
+// POST /auth/login, ADR-0008 §5). When OIDC is configured a "Sign in with SSO"
+// button starts the browser flow; a collapsed "Developer sign-in" section keeps
+// the paste-a-token dev login available for local development. A link to /signup
+// lets a first-time owner create their organization.
 templ Login(data LoginData) {
 	@Minimal("Sign in") {
 		@uikit.PageHeader(uikit.PageHeaderConfig{
@@ -18,35 +20,51 @@ templ Login(data LoginData) {
 					{ data.Error }
 				}
 			}
-			if data.OIDC {
-				<p class="uk-muted">
-					Sign in with your organization's identity provider to open the
-					dashboard.
-				</p>
-				@uikit.ButtonLink(uikit.ButtonLinkConfig{Variant: uikit.ButtonPrimary, Href: "/login"}) {
-					Sign in with your identity provider
+			<form method="post" action="/login">
+				@uikit.Field(uikit.FieldConfig{Label: "Organization slug", For: "login-org", Required: true}) {
+					@uikit.Input(uikit.InputConfig{ID: "login-org", Name: "org_slug", Value: data.OrgSlug, Placeholder: "acme", Attrs: templ.Attributes{"required": true, "autofocus": true}})
 				}
-			} else {
+				@uikit.Field(uikit.FieldConfig{Label: "Email", For: "login-email", Required: true}) {
+					@uikit.Input(uikit.InputConfig{ID: "login-email", Name: "email", Type: "email", Value: data.Email, Placeholder: "you@example.com", Attrs: templ.Attributes{"required": true}})
+				}
+				@uikit.Field(uikit.FieldConfig{Label: "Password", For: "login-password", Required: true}) {
+					@uikit.Input(uikit.InputConfig{ID: "login-password", Name: "password", Type: "password", Attrs: templ.Attributes{"required": true}})
+				}
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
+					Sign in
+				}
+			</form>
+			<div class="uk-row-actions">
+				@uikit.ButtonLink(uikit.ButtonLinkConfig{Variant: uikit.ButtonSecondary, Href: "/signup"}) {
+					Create an organization
+				}
+				if data.OIDC {
+					@uikit.ButtonLink(uikit.ButtonLinkConfig{Variant: uikit.ButtonSecondary, Href: "/login/sso"}) {
+						Sign in with SSO
+					}
+				}
+			</div>
+			<details class="uk-user-menu">
+				<summary class="uk-btn uk-btn--ghost">Developer sign-in (paste token)</summary>
 				<p class="uk-muted">
 					Paste a control-plane session token to open the dashboard. Obtain one
 					out-of-band with <code class="uk-mono">drun-dash login</code> or by
 					calling <code class="uk-mono">POST /auth/session</code>.
 				</p>
-				<form method="post" action="/login">
+				<form method="post" action="/login/token">
 					@uikit.Field(uikit.FieldConfig{Label: "Session token", For: "token"}) {
 						@uikit.Textarea(uikit.TextareaConfig{
 							ID:          "token",
 							Name:        "token",
 							Rows:        4,
 							Placeholder: "eyJhbGciOi...",
-							Attrs:       templ.Attributes{"required": true, "autofocus": true},
 						})
 					}
-					@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
-						Sign in
+					@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Type: "submit"}) {
+						Sign in with token
 					}
 				</form>
-			}
+			</details>
 		}
 	}
 }

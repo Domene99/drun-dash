@@ -3,13 +3,15 @@
 //
 // The admin UI is a separate binary from the control plane and never imports
 // control-plane packages; it talks to the control plane over HTTP through
-// [Client]. Members sign in through the OIDC authorization-code browser flow
-// (see oidc.go): the admin UI redirects to the identity provider, handles the
-// callback, and exchanges the verified ID token for a control-plane session JWT
-// via [Client.ExchangeSession] (POST /auth/session). The JWT is stored in a
-// secure, HttpOnly cookie and attached as an Authorization: Bearer header on
-// every subsequent API call (see server.go). When OIDC is not configured the UI
-// falls back to a paste-a-token dev login for local development.
+// [Client]. The primary sign-in is a local email + password login scoped to an
+// organization (ADR-0008): the owner signs up their org ([Client.Signup]), logs
+// in ([Client.Login]), and invites teammates who accept via [Client.AcceptInvite]
+// — each minting a control-plane session JWT. An optional OIDC authorization-code
+// browser flow (see oidc.go) exchanges a verified ID token for a session JWT via
+// [Client.ExchangeSession] (POST /auth/session), and a paste-a-token dev login
+// stays available for local development. However the member signs in, the JWT is
+// stored in a secure, HttpOnly cookie and attached as an Authorization: Bearer
+// header on every subsequent API call (see server.go).
 package ui
 
 import (
