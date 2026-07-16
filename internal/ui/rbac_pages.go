@@ -25,10 +25,12 @@ import (
 // is a separate binary and never imports the control-plane store, so the small
 // set it needs is restated here.
 const (
-	permRolesManage   = "roles.manage"
-	permMembersManage = "members.manage"
-	permAuditView     = "audit.view"
-	permAgentsManage  = "agents.manage"
+	permRolesManage     = "roles.manage"
+	permMembersManage   = "members.manage"
+	permAuditView       = "audit.view"
+	permAgentsManage    = "agents.manage"
+	permPoliciesManage  = "policies.manage"
+	permEndpointsManage = "endpoints.manage"
 )
 
 // hasPermission reports whether perms contains want.
@@ -458,12 +460,12 @@ func (s *Server) policyName(ctx context.Context, token, id string) string {
 // read-only policy detail views.
 func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
-	chrome, _, err := s.buildChrome(r.Context(), token, "policies", "Policies")
+	chrome, perms, err := s.buildChrome(r.Context(), token, "policies", "Policies")
 	if err != nil {
 		s.redirectToLogin(w, r)
 		return
 	}
-	data := views.PoliciesData{Chrome: chrome}
+	data := views.PoliciesData{Chrome: chrome, CanManage: hasPermission(perms, permPoliciesManage)}
 	policies, err := s.client.ListPolicies(r.Context(), token)
 	switch {
 	case errors.Is(err, ErrUnauthorized):
@@ -472,6 +474,75 @@ func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		s.logger.ErrorContext(r.Context(), "admin-ui: list policies failed", slog.Any("error", err))
 		data.Error = "Could not load policies: " + readableError(err)
+	default:
+		data.Policies = policyListRows(policies.Items, s.now())
+	}
+	s.render(w, r, http.StatusOK, views.Policies(data))
+}
+
+// handlePolicyCreate creates a policy and its first version from the submitted
+// form and returns to the Policies page. A rejected token redirects to /login; a
+// validation problem or a duplicate name (409) re-renders the page with the
+// message.
+func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
+	token := tokenFromContext(r.Context())
+	if err := r.ParseForm(); err != nil {
+		s.renderPoliciesError(w, r, token, "Could not read the submitted form.")
+		return
+	}
+	name := strings.TrimSpace(r.PostFormValue("name"))
+	if name == "" {
+		s.renderPoliciesError(w, r, token, "A policy name is required.")
+		return
+	}
+	boundary := PolicyBoundary{
+		AllowedTools: parseToolList(r.PostFormValue("allowed_tools")),
+		Network:      strings.TrimSpace(r.PostFormValue("network")),
+	}
+	if raw := strings.TrimSpace(r.PostFormValue("fan_out_ceiling")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			s.renderPoliciesError(w, r, token, "Fan-out ceiling must be a whole number of 0 or more.")
+			return
+		}
+		boundary.FanOutCeiling = &n
+	}
+	body := PolicyCreate{
+		Name:        name,
+		Description: strings.TrimSpace(r.PostFormValue("description")),
+		Boundary:    boundary,
+	}
+
+	_, err := s.client.CreatePolicy(r.Context(), token, body)
+	if errors.Is(err, ErrUnauthorized) {
+		s.redirectToLogin(w, r)
+		return
+	}
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "admin-ui: create policy failed", slog.Any("error", err))
+		s.renderPoliciesError(w, r, token, "Could not create policy: "+readableError(err))
+		return
+	}
+	http.Redirect(w, r, "/policies", http.StatusSeeOther)
+}
+
+// renderPoliciesError re-renders the Policies page carrying a message after a
+// failed create, rebuilding the live list so the table still reflects current
+// state.
+func (s *Server) renderPoliciesError(w http.ResponseWriter, r *http.Request, token, msg string) {
+	chrome, perms, err := s.buildChrome(r.Context(), token, "policies", "Policies")
+	if err != nil {
+		s.redirectToLogin(w, r)
+		return
+	}
+	data := views.PoliciesData{Chrome: chrome, CanManage: hasPermission(perms, permPoliciesManage), Error: msg}
+	policies, err := s.client.ListPolicies(r.Context(), token)
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		s.redirectToLogin(w, r)
+		return
+	case err != nil:
+		s.logger.ErrorContext(r.Context(), "admin-ui: list policies failed", slog.Any("error", err))
 	default:
 		data.Policies = policyListRows(policies.Items, s.now())
 	}

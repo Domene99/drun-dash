@@ -10,6 +10,7 @@ templ Policies(data PoliciesData) {
 		@uikit.PageHeader(uikit.PageHeaderConfig{
 			Title:       "Policies",
 			Description: "The policy boundaries that govern agent sessions.",
+			Action:      policiesHeaderAction(data),
 		})
 		@uikit.Card(uikit.CardConfig{}) {
 			if data.Error != "" {
@@ -47,6 +48,56 @@ templ Policies(data PoliciesData) {
 				}
 			}
 		}
+		if data.CanManage {
+			@policyCreateModal()
+		}
+	}
+}
+
+// policiesHeaderAction renders the New-policy button, but only for callers who
+// may manage policies (policies.manage); otherwise it renders nothing.
+templ policiesHeaderAction(data PoliciesData) {
+	if data.CanManage {
+		@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Attrs: templ.Attributes{"data-uk-modal-open": "policy-create"}}) {
+			New policy
+		}
+	}
+}
+
+// policyCreateModal renders the New-policy dialog: name, description, and the
+// initial boundary (allowed tools, network posture, fan-out ceiling). It posts to
+// /policies (POST /policies), which creates the policy and its version 1.
+templ policyCreateModal() {
+	@uikit.Modal(uikit.ModalConfig{ID: "policy-create", Title: "New policy"}) {
+		<form method="post" action="/policies">
+			@uikit.Field(uikit.FieldConfig{Label: "Name", For: "policy-name", Required: true}) {
+				@uikit.Input(uikit.InputConfig{ID: "policy-name", Name: "name", Placeholder: "e.g. Read-only tools", Attrs: templ.Attributes{"required": true}})
+			}
+			@uikit.Field(uikit.FieldConfig{Label: "Description", For: "policy-description"}) {
+				@uikit.Textarea(uikit.TextareaConfig{ID: "policy-description", Name: "description", Rows: 2, Placeholder: "What this boundary enforces."})
+			}
+			@uikit.Field(uikit.FieldConfig{Label: "Allowed tools", For: "policy-allowed-tools", Help: "Tool identifiers agents may invoke under this boundary, one per line or comma-separated. Leave empty to allow none."}) {
+				@uikit.Textarea(uikit.TextareaConfig{ID: "policy-allowed-tools", Name: "allowed_tools", Rows: 3, Placeholder: "search\nfetch"})
+			}
+			@uikit.Field(uikit.FieldConfig{Label: "Network", For: "policy-network", Help: "Network egress posture for sessions under this boundary."}) {
+				@uikit.Select(uikit.SelectConfig{ID: "policy-network", Name: "network"}) {
+					<option value="none">none</option>
+					<option value="allowlist">allowlist</option>
+					<option value="unrestricted">unrestricted</option>
+				}
+			}
+			@uikit.Field(uikit.FieldConfig{Label: "Fan-out ceiling", For: "policy-fan-out", Help: "Default ceiling on concurrent sub-agents. Leave blank for the engine default."}) {
+				@uikit.Input(uikit.InputConfig{ID: "policy-fan-out", Name: "fan_out_ceiling", Type: "number", Attrs: templ.Attributes{"min": "0", "step": "1"}})
+			}
+			<div class="uk-modal-footer">
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Attrs: templ.Attributes{"data-uk-modal-close": true}}) {
+					Cancel
+				}
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
+					Create policy
+				}
+			</div>
+		</form>
 	}
 }
 

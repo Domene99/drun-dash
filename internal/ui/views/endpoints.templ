@@ -1,0 +1,191 @@
+package views
+
+import "github.com/Domene99/drun-dash/internal/uikit"
+
+// Endpoints renders the model-endpoints page: the org's registered upstream
+// model endpoints by name, provider, base URL, an active StatusBadge, and a
+// "Key configured"/"No key" badge derived from secret_set. The stored API key is
+// never rendered — only whether one is on file. When the caller holds
+// endpoints.manage the page offers a "New endpoint" dialog and per-row Edit and
+// Delete dialogs; the key field is write-only (blank on edit keeps the current
+// key). Raw ids never appear as labels — the endpoint is shown by name.
+templ Endpoints(data EndpointsData) {
+	@Page(data.Chrome) {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       "Endpoints",
+			Description: "Upstream model endpoints your agents call, each holding a sealed API key.",
+			Action:      endpointsHeaderAction(data),
+		})
+		if data.NoAccess {
+			@uikit.Card(uikit.CardConfig{}) {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantWarning, Title: "No access"}) {
+					Managing model endpoints requires the endpoints.manage permission, which your account does not have.
+				}
+			}
+		} else {
+			@uikit.Card(uikit.CardConfig{}) {
+				if data.Error != "" {
+					@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+						{ data.Error }
+					}
+				}
+				if len(data.Endpoints) == 0 {
+					@uikit.EmptyState(uikit.EmptyStateConfig{
+						Title:   "No endpoints yet",
+						Message: "Register a model endpoint and its API key so your published agents can run.",
+					})
+				} else {
+					@uikit.Table() {
+						<thead>
+							<tr>
+								<th>Name</th>
+								<th>Provider</th>
+								<th>Base URL</th>
+								<th>Status</th>
+								<th>Key</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, e := range data.Endpoints {
+								<tr>
+									<td>{ e.Name }</td>
+									<td>{ orDash(e.Provider) }</td>
+									<td>{ orDash(e.BaseURL) }</td>
+									<td>
+										@uikit.StatusBadge(endpointStatus(e.Active))
+									</td>
+									<td>
+										if e.SecretSet {
+											@uikit.Badge(uikit.BadgeConfig{Variant: uikit.VariantSuccess, Label: endpointKeyBadge(true)})
+										} else {
+											@uikit.Badge(uikit.BadgeConfig{Variant: uikit.VariantNeutral, Label: endpointKeyBadge(false)})
+										}
+									</td>
+									<td>
+										if data.CanManage {
+											<div class="uk-row-actions">
+												@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Small: true, Attrs: templ.Attributes{"data-uk-modal-open": endpointEditModalID(e.ID)}}) {
+													Edit
+												}
+												@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonDanger, Small: true, Attrs: templ.Attributes{"data-uk-modal-open": endpointDeleteModalID(e.ID)}}) {
+													Delete
+												}
+											</div>
+										} else {
+											<span class="uk-muted">—</span>
+										}
+									</td>
+								</tr>
+							}
+						</tbody>
+					}
+				}
+			}
+			if data.CanManage {
+				@endpointCreateModal(data.Providers)
+				for _, e := range data.Endpoints {
+					@endpointEditModal(e, data.Providers)
+					@endpointDeleteModal(e)
+				}
+			}
+		}
+	}
+}
+
+// endpointsHeaderAction renders the New-endpoint button, but only for callers
+// who may manage endpoints (endpoints.manage); otherwise it renders nothing.
+templ endpointsHeaderAction(data EndpointsData) {
+	if data.CanManage {
+		@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Attrs: templ.Attributes{"data-uk-modal-open": "endpoint-create"}}) {
+			New endpoint
+		}
+	}
+}
+
+// endpointCreateModal renders the New-endpoint dialog: name, provider, base URL,
+// and the write-only API key. It posts to /endpoints (POST /model-endpoints).
+templ endpointCreateModal(providers []string) {
+	@uikit.Modal(uikit.ModalConfig{ID: "endpoint-create", Title: "New endpoint"}) {
+		<form method="post" action="/endpoints">
+			@uikit.Field(uikit.FieldConfig{Label: "Name", For: "endpoint-name", Required: true}) {
+				@uikit.Input(uikit.InputConfig{ID: "endpoint-name", Name: "name", Placeholder: "e.g. Anthropic production", Attrs: templ.Attributes{"required": true}})
+			}
+			@uikit.Field(uikit.FieldConfig{Label: "Provider", For: "endpoint-provider"}) {
+				@uikit.Select(uikit.SelectConfig{ID: "endpoint-provider", Name: "provider"}) {
+					for _, p := range providers {
+						<option value={ p }>{ p }</option>
+					}
+				}
+			}
+			@uikit.Field(uikit.FieldConfig{Label: "Base URL", For: "endpoint-base-url", Required: true}) {
+				@uikit.Input(uikit.InputConfig{ID: "endpoint-base-url", Name: "base_url", Type: "url", Placeholder: "https://api.anthropic.com", Attrs: templ.Attributes{"required": true}})
+			}
+			@uikit.Field(uikit.FieldConfig{Label: "API key", For: "endpoint-api-key", Help: "The real upstream key. It is sealed server-side and never shown again. Leave blank to register without a key."}) {
+				@uikit.Input(uikit.InputConfig{ID: "endpoint-api-key", Name: "api_key", Type: "password", Attrs: templ.Attributes{"autocomplete": "off"}})
+			}
+			<div class="uk-modal-footer">
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Attrs: templ.Attributes{"data-uk-modal-close": true}}) {
+					Cancel
+				}
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
+					Create endpoint
+				}
+			</div>
+		</form>
+	}
+}
+
+// endpointEditModal renders the per-endpoint edit dialog, prefilled with the
+// current name, provider, base URL, and active state. The API key field is blank
+// and write-only: leaving it blank keeps the stored key, entering a value
+// re-seals it. It posts to /endpoints/{id}/update (PATCH /model-endpoints/{id}).
+templ endpointEditModal(e EndpointRow, providers []string) {
+	@uikit.Modal(uikit.ModalConfig{ID: endpointEditModalID(e.ID), Title: "Edit endpoint — " + e.Name}) {
+		<form method="post" action={ templ.SafeURL(endpointUpdatePath(e.ID)) }>
+			@uikit.Field(uikit.FieldConfig{Label: "Name", For: "endpoint-name-" + e.ID, Required: true}) {
+				@uikit.Input(uikit.InputConfig{ID: "endpoint-name-" + e.ID, Name: "name", Value: e.Name, Attrs: templ.Attributes{"required": true}})
+			}
+			@uikit.Field(uikit.FieldConfig{Label: "Provider", For: "endpoint-provider-" + e.ID}) {
+				@uikit.Select(uikit.SelectConfig{ID: "endpoint-provider-" + e.ID, Name: "provider"}) {
+					for _, p := range providers {
+						<option value={ p } selected?={ p == e.Provider }>{ p }</option>
+					}
+				}
+			}
+			@uikit.Field(uikit.FieldConfig{Label: "Base URL", For: "endpoint-base-url-" + e.ID, Required: true}) {
+				@uikit.Input(uikit.InputConfig{ID: "endpoint-base-url-" + e.ID, Name: "base_url", Type: "url", Value: e.BaseURL, Attrs: templ.Attributes{"required": true}})
+			}
+			@uikit.Field(uikit.FieldConfig{Label: "API key", For: "endpoint-api-key-" + e.ID, Help: endpointKeyHelp(e.SecretSet)}) {
+				@uikit.Input(uikit.InputConfig{ID: "endpoint-api-key-" + e.ID, Name: "api_key", Type: "password", Placeholder: "Leave blank to keep current key", Attrs: templ.Attributes{"autocomplete": "off"}})
+			}
+			@uikit.Check(uikit.CheckConfig{Name: "active", Value: "true", Label: "Active", Checked: e.Active})
+			<div class="uk-modal-footer">
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Attrs: templ.Attributes{"data-uk-modal-close": true}}) {
+					Cancel
+				}
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
+					Save endpoint
+				}
+			</div>
+		</form>
+	}
+}
+
+// endpointDeleteModal renders the per-endpoint delete confirmation, posting to
+// /endpoints/{id}/delete (DELETE /model-endpoints/{id}).
+templ endpointDeleteModal(e EndpointRow) {
+	@uikit.Modal(uikit.ModalConfig{ID: endpointDeleteModalID(e.ID), Title: "Delete endpoint"}) {
+		<form method="post" action={ templ.SafeURL(endpointDeletePath(e.ID)) }>
+			<p>Delete <strong>{ e.Name }</strong>? Agents pinned to this endpoint will no longer be able to run until repinned. This cannot be undone.</p>
+			<div class="uk-modal-footer">
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Attrs: templ.Attributes{"data-uk-modal-close": true}}) {
+					Cancel
+				}
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonDanger, Type: "submit"}) {
+					Delete endpoint
+				}
+			</div>
+		</form>
+	}
+}

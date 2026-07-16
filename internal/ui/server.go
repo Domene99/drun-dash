@@ -164,7 +164,12 @@ func (s *Server) routes() chi.Router {
 		r.Post("/agents", s.handleAgentCreate)
 		r.Get("/agents/{agentId}", s.handleAgentDetail)
 		r.Get("/policies", s.handlePolicies)
+		r.Post("/policies", s.handlePolicyCreate)
 		r.Get("/policies/{policyId}", s.handlePolicyDetail)
+		r.Get("/endpoints", s.handleEndpoints)
+		r.Post("/endpoints", s.handleEndpointCreate)
+		r.Post("/endpoints/{id}/update", s.handleEndpointUpdate)
+		r.Post("/endpoints/{id}/delete", s.handleEndpointDelete)
 	})
 
 	return r
