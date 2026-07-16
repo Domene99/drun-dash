@@ -90,6 +90,23 @@ other store copies, so consistency across the package matters more than breadth.
 | `trajectories.go` | `TrajectoryStore` | `Create`, `GetByID`, `ListByOrg`, `SetEnded` |
 | `trajectory_nodes.go` | `TrajectoryNodeStore` | `Create`, `GetByID`, `GetByEventID`, `ListByTrajectory` |
 
+### RBAC (`000007`)
+
+| File | Type | Methods |
+|------|------|---------|
+| `permissions.go` | (catalog) | `AllPermissions`, `IsValidPermission`, `BuiltinRoles` — the app-level permission catalog + built-in role definitions (ADR-0006 §1–2) |
+| `roles.go` | `RoleStore` | `Create`, `GetByID`, `ListByOrg`, `Update`, `SetPermissions`, `SetAgents`, `Delete` |
+| `member_roles.go` | `MemberRoleStore` | `AssignRole`, `RemoveRole` (last-Owner guard), `ListRolesForMember`, `ListMembersForRole` |
+| `team_roles.go` | `TeamRoleStore` | `AssignRole`, `RemoveRole`, `ListRolesForTeam`, `ListTeamsForRole` |
+| `resolver.go` | `AccessResolver` | `HasPermission`, `EffectivePermissions`, `AuthorizeRun` — per-request, DB-sourced effective access (union over direct + team roles) |
+
+Built-in roles have `builtin = true`: their name and permission set are immutable
+(`SetPermissions`, a rename via `Update`, and `Delete` return
+`ErrImmutableBuiltin`), though their agent access stays editable. Permissions are
+free `TEXT` validated against the Go catalog (`ErrInvalidPermission` on an
+unknown string), not a PG enum. `Create`, `SetPermissions`, and `SetAgents`
+write their several tables in one transaction.
+
 ### Analytics (aggregation over `000004`–`000005`)
 
 | File | Type | Methods |
@@ -104,7 +121,7 @@ rather than a `models_*.go` file, since they are query shapes, not table rows.
 
 The row structs live in per-domain `models_*.go` files: `models.go` (tenancy +
 identity), `models_modelinfra.go`, `models_billing.go`, `models_catalog.go`,
-`models_runtime.go`, and `models_telemetry.go`.
+`models_runtime.go`, `models_telemetry.go`, and `roles_models.go` (RBAC).
 
 ## Types & conventions
 
@@ -115,7 +132,7 @@ identity), `models_modelinfra.go`, `models_billing.go`, `models_catalog.go`,
   `Entitlement.MemberID`, `Session.TerminatedAt`), except cap amounts (see
   below).
 - **Enums** are typed `string` constants with a `Valid()` method, mirroring
-  `Role`: `BudgetScope`, `BudgetWindow`, `SessionStatus`
+  `MemberRole` (the deprecated coarse member role): `BudgetScope`, `BudgetWindow`, `SessionStatus`
   (`pending` / `active` / `terminated` / `failed`), `ApprovalStatus`
   (`pending` / `approved` / `denied` / `expired`), and `TrajectoryFieldClass`
   (`structure` / `payload`).
@@ -166,9 +183,10 @@ m, err := members.Create(ctx, store.CreateMemberParams{
 ## Tests
 
 Pure logic (error translation, `Role.Valid`, the enum `Valid()` methods, the
-entitlement member-XOR-team pre-check, and the approval terminal-status
-pre-check) is covered by `store_test.go`, `catalog_test.go`, and
-`runtime_test.go`, which run with **no database**:
+entitlement member-XOR-team pre-check, the approval terminal-status pre-check,
+and the RBAC permission catalog + grant-folding logic) is covered by
+`store_test.go`, `catalog_test.go`, `runtime_test.go`, and `rbac_test.go`, which
+run with **no database**:
 
 ```sh
 go test ./internal/store/...
@@ -176,7 +194,8 @@ go test ./internal/store/...
 
 The database-touching tests live in `integration_test.go`,
 `catalog_integration_test.go`, `runtime_integration_test.go`,
-`telemetry_integration_test.go`, and `analytics_test.go` behind the
+`telemetry_integration_test.go`, `rbac_integration_test.go`, and
+`analytics_test.go` behind the
 `integration` build tag and **skip** when Postgres is unreachable (mirroring
 `internal/db`):
 

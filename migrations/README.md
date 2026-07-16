@@ -27,6 +27,7 @@ startup) is added in a later batch. This directory is just the SQL.
 | `000004_agent_catalog` | Agent catalog | `policies`, `policy_versions`, `budgets`, `budget_rules`, `agents`, `agent_versions`, `entitlements` |
 | `000005_runtime_metering` | Runtime & metering | `sessions`, `credential_grants`, `usage_events`, `approval_requests` |
 | `000006_telemetry` | Telemetry | `trajectories`, `trajectory_nodes` |
+| `000007_rbac` | RBAC | `roles`, `role_permissions`, `role_agents`, `member_roles`, `team_roles` |
 
 Notes on the data model:
 
@@ -40,6 +41,13 @@ Notes on the data model:
 - **Entitlements** grant an agent to **exactly one** principal — a member *XOR* a
   team — enforced by the `entitlements_member_xor_team` check constraint plus
   partial unique indexes.
+- **RBAC (000007)** adds org-scoped `roles` bundling permissions
+  (`role_permissions`, TEXT validated against a Go catalog) and agent access
+  (`all_agents` flag or `role_agents`, which carries the entitlement overrides),
+  assigned to members (`member_roles`) and teams (`team_roles`). Per ADR-0006 the
+  step seeds four built-in roles per org and backfills `members.role` +
+  `entitlements` onto roles; both are retained (not dropped) for one release, so
+  the step is additive and reversible.
 - **Secrets** are never stored: `model_endpoints.secret_ref` is an external
   handle, and `credential_grants.proxy_token_hash` stores only a token hash.
 - **`usage_events`** is append-only token metering, keyed by a `bigint` identity

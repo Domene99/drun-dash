@@ -7,19 +7,24 @@ import "time"
 // (pgx scans and encodes them transparently) and TIMESTAMPTZ columns as
 // time.Time; nullable columns use pointer fields.
 
-// Role is the coarse authorization role carried on a [Member], mirroring the
-// Postgres member_role enum ('admin' | 'member' | 'auditor').
-type Role string
+// MemberRole is the coarse authorization role carried on a [Member], mirroring
+// the Postgres member_role enum ('admin' | 'member' | 'auditor').
+//
+// Deprecated for authorization by ADR-0006: the source of truth for access
+// becomes the RBAC [Role] tables (member_roles / team_roles). The column and
+// this type are retained for one release as identity metadata and to keep the
+// backfill reversible.
+type MemberRole string
 
 // The member_role enum values. These are the only roles the database accepts.
 const (
-	RoleAdmin   Role = "admin"
-	RoleMember  Role = "member"
-	RoleAuditor Role = "auditor"
+	RoleAdmin   MemberRole = "admin"
+	RoleMember  MemberRole = "member"
+	RoleAuditor MemberRole = "auditor"
 )
 
 // Valid reports whether r is one of the defined member_role values.
-func (r Role) Valid() bool {
+func (r MemberRole) Valid() bool {
 	switch r {
 	case RoleAdmin, RoleMember, RoleAuditor:
 		return true
@@ -57,14 +62,14 @@ type Team struct {
 // Member is a human principal mapped from an upstream IdP subject (table
 // members; unique per (org_id, idp_subject)).
 type Member struct {
-	ID          string    // id (uuid)
-	OrgID       string    // org_id → organizations.id
-	IDPSubject  string    // idp_subject
-	Email       string    // email
-	DisplayName *string   // display_name (nullable)
-	Role        Role      // role (member_role enum)
-	Active      bool      // active
-	CreatedAt   time.Time // created_at
+	ID          string     // id (uuid)
+	OrgID       string     // org_id → organizations.id
+	IDPSubject  string     // idp_subject
+	Email       string     // email
+	DisplayName *string    // display_name (nullable)
+	Role        MemberRole // role (member_role enum)
+	Active      bool       // active
+	CreatedAt   time.Time  // created_at
 }
 
 // TeamMembership links a [Member] to a [Team] (join table team_memberships,

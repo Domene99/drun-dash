@@ -33,7 +33,7 @@ type CreateMemberParams struct {
 	IDPSubject  string
 	Email       string
 	DisplayName *string
-	Role        Role
+	Role        MemberRole
 }
 
 // Create inserts a member and returns the stored row, letting the database
