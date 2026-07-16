@@ -217,7 +217,7 @@ type grantScopes struct {
 }
 
 // launchSession implements POST /sessions/launch (operationId launchSession).
-// It executes ADR-0003 §1–§5: resolve the agent version + entitlement (all from
+// It executes ADR-0003 §1–§5: resolve the agent version + role-based authorization (all from
 // the token principal), compile and sign the policy bundle, mint a scoped proxy
 // grant, persist the session and grant atomically, and return the bundle plus
 // the raw proxy token exactly once.
@@ -266,19 +266,21 @@ func (d Deps) launchSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// §1.3 Check entitlement (member XOR team). No match → the one
+	// §1.3 Authorize the launch against the caller's roles (ADR-0006 §6): the
+	// caller must hold agents.run in their effective permission set AND this
+	// agent must be in their effective agent access. No match → the one
 	// contract-sanctioned 403.
-	matched, ok := d.resolveEntitlement(w, ctx, agent.ID, claims.OrgID, claims.MemberID)
+	grant, ok := d.authorizeRun(w, ctx, agent.ID, claims.MemberID)
 	if !ok {
 		return
 	}
 
-	// §1.4 Effective policy version: the entitlement override wins, else the
-	// agent version's pin. Neither present is a misconfiguration → 500.
+	// §1.4 Effective policy version: the resolved run grant's override wins,
+	// else the agent version's pin. Neither present is a misconfiguration → 500.
 	var policyVersionID string
 	switch {
-	case matched.PolicyVersionID != nil:
-		policyVersionID = *matched.PolicyVersionID
+	case grant.PolicyVersionID != nil:
+		policyVersionID = *grant.PolicyVersionID
 	case av.PolicyVersionID != nil:
 		policyVersionID = *av.PolicyVersionID
 	default:
@@ -318,7 +320,7 @@ func (d Deps) launchSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// §1 fan-out clamp: the minimum of every bound that applies.
-	fanOut := clampFanOut(av.FanOutCeiling, req.RequestedFanOut, boundary.FanOutCeiling, matched.MaxFanOut)
+	fanOut := clampFanOut(av.FanOutCeiling, req.RequestedFanOut, boundary.FanOutCeiling, grant.MaxFanOut)
 
 	// §2 Assemble and sign the bundle before any mutation.
 	now := time.Now().UTC()
@@ -434,49 +436,6 @@ func (d Deps) resolveAgentVersion(w http.ResponseWriter, ctx context.Context, ag
 	return av, true
 }
 
-// resolveEntitlement returns the entitlement authorising memberID (directly or
-// via a team) to launch agentID, per ADR-0003 §1.3. A direct member grant is
-// preferred over a team grant; among grants of the same kind the first in the
-// store's stable order wins. No match writes the contract-sanctioned 403 and
-// returns ok=false.
-func (d Deps) resolveEntitlement(w http.ResponseWriter, ctx context.Context, agentID, orgID, memberID string) (store.Entitlement, bool) {
-	ents, err := newEntitlementStore(d.Pool).ListByAgent(ctx, agentID)
-	if err != nil {
-		slog.Error("session launch: list entitlements", slog.String("agent_id", agentID), slog.Any("error", err))
-		writeInternalError(w)
-		return store.Entitlement{}, false
-	}
-
-	teamSet := map[string]bool{}
-	if memberID != "" {
-		teams, err := newTeamMembershipStore(d.Pool).ListTeams(ctx, memberID)
-		if err != nil {
-			slog.Error("session launch: list member teams", slog.String("member_id", memberID), slog.Any("error", err))
-			writeInternalError(w)
-			return store.Entitlement{}, false
-		}
-		for _, t := range teams {
-			teamSet[t.ID] = true
-		}
-	}
-
-	if memberID != "" {
-		for i := range ents {
-			if ents[i].MemberID != nil && *ents[i].MemberID == memberID {
-				return ents[i], true
-			}
-		}
-	}
-	for i := range ents {
-		if ents[i].TeamID != nil && teamSet[*ents[i].TeamID] {
-			return ents[i], true
-		}
-	}
-
-	WriteForbidden(w, "not entitled to launch this agent")
-	return store.Entitlement{}, false
-}
-
 // signBundle assembles a pkg/policy.PolicyBundle for the resolved policy version
 // and compiled config, computes its content hash over the canonical drun_config,
 // and signs the bundle's SigningInput with the control plane's Ed25519
@@ -537,7 +496,7 @@ func (d Deps) terminateSession(w http.ResponseWriter, r *http.Request) {
 
 // clampFanOut returns the effective fan-out ceiling: the minimum of the agent
 // version's ceiling (always a bound) and any of the requested value, the policy
-// boundary's ceiling, and the entitlement's max_fan_out that are set. A
+// boundary's ceiling, and the run grant's max_fan_out that are set. A
 // requested value only ever clamps the ceiling down (ADR-0003 §1). The result
 // is floored at 0 to satisfy the sessions.fan_out_ceiling CHECK (>= 0).
 func clampFanOut(agentVersionCeiling int, bounds ...*int) int {

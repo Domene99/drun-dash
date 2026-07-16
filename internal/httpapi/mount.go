@@ -93,6 +93,12 @@ type Deps struct {
 // group that runs [authmw.RequireAuth] first, so every handler behind it can
 // assume a principal is present.
 //
+// Mutating and org-wide-audit routes additionally pass through a
+// [Deps.requirePermission] gate (ADR-0006 §6), which resolves the caller's
+// effective permissions from the database per request and answers 403 when the
+// required permission is absent. Read routes stay member-visible within the org
+// (only querySpend, an org-wide audit surface, is gated, on audit.view).
+//
 // This is the single seam the binary calls to expose the API surface: the
 // authentication vertical (POST /auth/session, GET /auth/whoami) plus the
 // resource handlers. Adding a resource is one line in the protected group here.
@@ -128,22 +134,41 @@ func Mount(r chi.Router, deps Deps) {
 		// documented contract extension, not in openapi/v1.yaml.
 		pr.Get("/me/agents", deps.listMyAgents)
 
+		// Agents. Reads are member-visible within the org; mutations require
+		// agents.manage (ADR-0006 §6). setAgentEntitlements is the legacy grant
+		// surface superseded by role-agent management, so it requires
+		// roles.manage.
 		pr.Get("/agents", deps.listAgents)
-		pr.Post("/agents", deps.createAgent)
+		pr.With(deps.requirePermission(store.PermAgentsManage)).Post("/agents", deps.createAgent)
 		pr.Get("/agents/{agentId}", deps.getAgent)
-		pr.Patch("/agents/{agentId}", deps.updateAgent)
-		pr.Delete("/agents/{agentId}", deps.deleteAgent)
+		pr.With(deps.requirePermission(store.PermAgentsManage)).Patch("/agents/{agentId}", deps.updateAgent)
+		pr.With(deps.requirePermission(store.PermAgentsManage)).Delete("/agents/{agentId}", deps.deleteAgent)
 		pr.Get("/agents/{agentId}/versions", deps.listAgentVersions)
-		pr.Post("/agents/{agentId}/versions", deps.publishAgentVersion)
+		pr.With(deps.requirePermission(store.PermAgentsManage)).Post("/agents/{agentId}/versions", deps.publishAgentVersion)
 		pr.Get("/agents/{agentId}/entitlements", deps.listAgentEntitlements)
-		pr.Put("/agents/{agentId}/entitlements", deps.setAgentEntitlements)
+		pr.With(deps.requirePermission(store.PermRolesManage)).Put("/agents/{agentId}/entitlements", deps.setAgentEntitlements)
 
+		// Policies. Reads member-visible; create/publish require policies.manage.
 		pr.Get("/policies", deps.listPolicies)
-		pr.Post("/policies", deps.createPolicy)
+		pr.With(deps.requirePermission(store.PermPoliciesManage)).Post("/policies", deps.createPolicy)
 		pr.Get("/policies/{policyId}", deps.getPolicy)
 		pr.Get("/policies/{policyId}/versions", deps.listPolicyVersions)
-		pr.Post("/policies/{policyId}/versions", deps.publishPolicyVersion)
+		pr.With(deps.requirePermission(store.PermPoliciesManage)).Post("/policies/{policyId}/versions", deps.publishPolicyVersion)
 
+		// Roles and members (ADR-0006 §7). Defining a role is roles.manage;
+		// assigning roles to a member is members.manage; the member roster is
+		// visible to members.manage OR audit.view.
+		pr.With(deps.requirePermission(store.PermRolesManage)).Get("/roles", deps.listRoles)
+		pr.With(deps.requirePermission(store.PermRolesManage)).Post("/roles", deps.createRole)
+		pr.With(deps.requirePermission(store.PermRolesManage)).Get("/roles/{roleId}", deps.getRole)
+		pr.With(deps.requirePermission(store.PermRolesManage)).Patch("/roles/{roleId}", deps.updateRole)
+		pr.With(deps.requirePermission(store.PermRolesManage)).Delete("/roles/{roleId}", deps.deleteRole)
+		pr.With(deps.requireAnyPermission(store.PermMembersManage, store.PermAuditView)).Get("/members", deps.listMembers)
+		pr.With(deps.requirePermission(store.PermMembersManage)).Put("/members/{memberId}/roles", deps.updateMemberRoles)
+
+		// Sessions. Launch is agent-scoped (agents.run + agent access, checked
+		// in the handler); terminate is the launcher-or-members.manage rule
+		// (checked in the handler). listSessions/getSession stay member-visible.
 		pr.Get("/sessions", deps.listSessions)
 		pr.Post("/sessions/launch", deps.launchSession)
 		pr.Get("/sessions/{sessionId}", deps.getSession)
@@ -151,11 +176,15 @@ func Mount(r chi.Router, deps Deps) {
 		pr.Post("/sessions/{sessionId}/trajectory", deps.ingestTrajectoryEvents)
 		pr.Get("/sessions/{sessionId}/trajectory", deps.listTrajectoryEvents)
 
+		// Approvals. Requesting review is a member action; deciding requires
+		// approvals.decide.
 		pr.Get("/approvals", deps.listApprovals)
 		pr.Post("/approvals", deps.createApproval)
-		pr.Post("/approvals/{approvalId}/decision", deps.decideApproval)
+		pr.With(deps.requirePermission(store.PermApprovalsDecide)).Post("/approvals/{approvalId}/decision", deps.decideApproval)
 
-		pr.Get("/analytics/spend", deps.querySpend)
+		// Analytics. querySpend is an org-wide audit surface → audit.view;
+		// listBudgets stays member-visible (ADR-0006 §6).
+		pr.With(deps.requirePermission(store.PermAuditView)).Get("/analytics/spend", deps.querySpend)
 		pr.Get("/analytics/budgets", deps.listBudgets)
 	})
 }

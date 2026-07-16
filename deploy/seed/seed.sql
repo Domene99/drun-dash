@@ -3,7 +3,7 @@
 -- Populates a single demo organization (slug = 'demo') that exercises the full
 -- schema shipped by migrations 000001-000004: tenancy, identity, model
 -- infrastructure, and the agent catalog (policies, budgets, agents,
--- entitlements).
+-- entitlements) plus the RBAC roles model shipped by migration 000007.
 --
 -- IDEMPOTENT: safe to run repeatedly. Every statement either targets a natural
 -- unique key with ON CONFLICT, or guards itself with NOT EXISTS for the two
@@ -207,6 +207,9 @@ ON CONFLICT (agent_id, version) DO UPDATE
 
 -- ---------------------------------------------------------------------------
 -- Entitlements: grant one agent to a team and one to a member (member XOR team).
+-- These are RETAINED for one release (ADR-0006 §5) but are no longer the launch
+-- authority; the role grants seeded below are. They are kept so the legacy read
+-- endpoints (GET/PUT /agents/{id}/entitlements) still have data to show.
 -- ---------------------------------------------------------------------------
 -- code-reviewer -> Platform team.
 INSERT INTO entitlements (agent_id, team_id, max_fan_out)
@@ -225,6 +228,153 @@ JOIN agents a  ON a.org_id = o.id AND a.name = 'doc-writer'
 JOIN members m ON m.org_id = o.id AND m.idp_subject = 'demo|member'
 WHERE o.slug = 'demo'
 ON CONFLICT (agent_id, member_id) WHERE member_id IS NOT NULL DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- RBAC (ADR-0006): seed the four built-in roles for the demo org, map the
+-- members onto them, and re-express the two entitlements above as role-based
+-- agent access so launch authorization (now role-driven, ADR-0006 §6) keeps
+-- working for the demo.
+--
+-- The migration (000007) seeds built-ins only for orgs that existed when it
+-- ran; the demo org is created by THIS seed, which runs afterwards, so it must
+-- seed its own built-in roles. Everything here is idempotent (ON CONFLICT on
+-- the natural keys / composite PKs).
+-- ---------------------------------------------------------------------------
+
+-- Built-in roles (name + permission set are locked by ADR-0006 §1).
+INSERT INTO roles (org_id, name, description, builtin, all_agents)
+SELECT o.id, v.name, v.description, TRUE, v.all_agents
+FROM organizations o
+CROSS JOIN (VALUES
+    ('Owner',   'Super-admin: every permission and access to all agents.',                              TRUE),
+    ('Admin',   'Manages the catalog, members, roles, approvals, and audit; does not run agents.',      FALSE),
+    ('Auditor', 'Read-only access to the org-wide audit log, spend, and activity.',                     FALSE),
+    ('Member',  'May run the agents granted to them; no management permissions.',                       FALSE)
+) AS v (name, description, all_agents)
+WHERE o.slug = 'demo'
+ON CONFLICT (org_id, name) DO UPDATE
+    SET description = EXCLUDED.description,
+        builtin     = EXCLUDED.builtin,
+        all_agents  = EXCLUDED.all_agents;
+
+-- Built-in permission sets (ADR-0006 §1/§2).
+INSERT INTO role_permissions (role_id, permission)
+SELECT r.id, p.permission
+FROM organizations o
+JOIN roles r ON r.org_id = o.id AND r.builtin AND r.name = 'Owner'
+CROSS JOIN (VALUES
+    ('agents.manage'), ('policies.manage'), ('endpoints.manage'),
+    ('budgets.manage'), ('members.manage'), ('roles.manage'),
+    ('approvals.decide'), ('audit.view'), ('agents.run')
+) AS p (permission)
+WHERE o.slug = 'demo'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+INSERT INTO role_permissions (role_id, permission)
+SELECT r.id, p.permission
+FROM organizations o
+JOIN roles r ON r.org_id = o.id AND r.builtin AND r.name = 'Admin'
+CROSS JOIN (VALUES
+    ('agents.manage'), ('policies.manage'), ('endpoints.manage'),
+    ('budgets.manage'), ('members.manage'), ('roles.manage'),
+    ('approvals.decide'), ('audit.view')
+) AS p (permission)
+WHERE o.slug = 'demo'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+INSERT INTO role_permissions (role_id, permission)
+SELECT r.id, 'audit.view'
+FROM organizations o
+JOIN roles r ON r.org_id = o.id AND r.builtin AND r.name = 'Auditor'
+WHERE o.slug = 'demo'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+INSERT INTO role_permissions (role_id, permission)
+SELECT r.id, 'agents.run'
+FROM organizations o
+JOIN roles r ON r.org_id = o.id AND r.builtin AND r.name = 'Member'
+WHERE o.slug = 'demo'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- Map members onto built-in roles: admin -> Admin (+ Owner, the founding admin),
+-- member -> Member, auditor -> Auditor (ADR-0006 §5.2).
+INSERT INTO member_roles (member_id, role_id)
+SELECT m.id, r.id
+FROM organizations o
+JOIN members m ON m.org_id = o.id
+JOIN roles r   ON r.org_id = o.id AND r.builtin
+WHERE o.slug = 'demo'
+  AND (
+      (m.idp_subject = 'demo|admin'   AND r.name = 'Admin')
+   OR (m.idp_subject = 'demo|admin'   AND r.name = 'Owner')
+   OR (m.idp_subject = 'demo|member'  AND r.name = 'Member')
+   OR (m.idp_subject = 'demo|auditor' AND r.name = 'Auditor')
+  )
+ON CONFLICT (member_id, role_id) DO NOTHING;
+
+-- Custom role "Code Reviewers": grants agents.run + access to the code-reviewer
+-- agent (max_fan_out 2), assigned to the Platform team. Mirrors the migrated
+-- code-reviewer -> Platform entitlement so the team can still launch it.
+INSERT INTO roles (org_id, name, description, builtin, all_agents)
+SELECT o.id, 'Code Reviewers', 'Runs the code-reviewer agent (demo custom role).', FALSE, FALSE
+FROM organizations o
+WHERE o.slug = 'demo'
+ON CONFLICT (org_id, name) DO UPDATE SET description = EXCLUDED.description;
+
+INSERT INTO role_permissions (role_id, permission)
+SELECT r.id, 'agents.run'
+FROM organizations o
+JOIN roles r ON r.org_id = o.id AND r.name = 'Code Reviewers' AND r.builtin = FALSE
+WHERE o.slug = 'demo'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+INSERT INTO role_agents (role_id, agent_id, policy_version_id, max_fan_out)
+SELECT r.id, a.id, NULL, 2
+FROM organizations o
+JOIN roles r  ON r.org_id = o.id AND r.name = 'Code Reviewers' AND r.builtin = FALSE
+JOIN agents a ON a.org_id = o.id AND a.name = 'code-reviewer'
+WHERE o.slug = 'demo'
+ON CONFLICT (role_id, agent_id) DO UPDATE SET max_fan_out = EXCLUDED.max_fan_out;
+
+INSERT INTO team_roles (team_id, role_id)
+SELECT t.id, r.id
+FROM organizations o
+JOIN teams t ON t.org_id = o.id AND t.name = 'Platform'
+JOIN roles r ON r.org_id = o.id AND r.name = 'Code Reviewers' AND r.builtin = FALSE
+WHERE o.slug = 'demo'
+ON CONFLICT (team_id, role_id) DO NOTHING;
+
+-- Custom role "Doc Writers": grants agents.run + access to the doc-writer agent
+-- (max_fan_out 1), assigned directly to Marvin Member. Mirrors the migrated
+-- doc-writer -> Marvin entitlement so the member can still launch it.
+INSERT INTO roles (org_id, name, description, builtin, all_agents)
+SELECT o.id, 'Doc Writers', 'Runs the doc-writer agent (demo custom role).', FALSE, FALSE
+FROM organizations o
+WHERE o.slug = 'demo'
+ON CONFLICT (org_id, name) DO UPDATE SET description = EXCLUDED.description;
+
+INSERT INTO role_permissions (role_id, permission)
+SELECT r.id, 'agents.run'
+FROM organizations o
+JOIN roles r ON r.org_id = o.id AND r.name = 'Doc Writers' AND r.builtin = FALSE
+WHERE o.slug = 'demo'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+INSERT INTO role_agents (role_id, agent_id, policy_version_id, max_fan_out)
+SELECT r.id, a.id, NULL, 1
+FROM organizations o
+JOIN roles r  ON r.org_id = o.id AND r.name = 'Doc Writers' AND r.builtin = FALSE
+JOIN agents a ON a.org_id = o.id AND a.name = 'doc-writer'
+WHERE o.slug = 'demo'
+ON CONFLICT (role_id, agent_id) DO UPDATE SET max_fan_out = EXCLUDED.max_fan_out;
+
+INSERT INTO member_roles (member_id, role_id)
+SELECT m.id, r.id
+FROM organizations o
+JOIN members m ON m.org_id = o.id AND m.idp_subject = 'demo|member'
+JOIN roles r   ON r.org_id = o.id AND r.name = 'Doc Writers' AND r.builtin = FALSE
+WHERE o.slug = 'demo'
+ON CONFLICT (member_id, role_id) DO NOTHING;
 
 COMMIT;
 

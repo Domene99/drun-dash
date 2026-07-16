@@ -64,6 +64,13 @@ tags:
   - name: Analytics
     description: >-
       Spend and budget queries aggregated across sessions and agents.
+  - name: Roles
+    description: >-
+      Role-based access control: named roles bundling permissions and agent
+      access, assigned to members and teams (ADR-0006).
+  - name: Members
+    description: >-
+      Organization members and their role assignments.
 
 security:
   - bearerAuth: []
@@ -225,6 +232,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '501':
           $ref: '#/components/responses/NotImplemented'
 
@@ -269,6 +278,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '501':
           $ref: '#/components/responses/NotImplemented'
     delete:
@@ -281,6 +292,8 @@ paths:
           description: Agent deleted.
         '404':
           $ref: '#/components/responses/NotFound'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '501':
           $ref: '#/components/responses/NotImplemented'
 
@@ -327,6 +340,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '501':
           $ref: '#/components/responses/NotImplemented'
 
@@ -373,6 +388,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '501':
           $ref: '#/components/responses/NotImplemented'
 
@@ -419,6 +436,8 @@ paths:
                 $ref: '#/components/schemas/Policy'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '501':
           $ref: '#/components/responses/NotImplemented'
 
@@ -487,6 +506,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '501':
           $ref: '#/components/responses/NotImplemented'
 
@@ -737,6 +758,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '501':
           $ref: '#/components/responses/NotImplemented'
 
@@ -771,6 +794,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '501':
           $ref: '#/components/responses/NotImplemented'
 
@@ -791,6 +816,174 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '501':
           $ref: '#/components/responses/NotImplemented'
+
+  # ----------------------------------------------------------------- RBAC ---
+  /roles:
+    get:
+      tags: [Roles]
+      operationId: listRoles
+      summary: List roles
+      description: >-
+        List the roles in the calling organization — the built-in roles plus
+        any custom roles — with their permissions and agent access. Requires
+        the roles.manage permission.
+      responses:
+        '200':
+          description: The organization's roles.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Roles]
+      operationId: createRole
+      summary: Create a custom role
+      description: >-
+        Create a custom role bundling a set of permissions and agent access.
+        Requires roles.manage.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleCreate'
+      responses:
+        '201':
+          description: Role created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /roles/{roleId}:
+    parameters:
+      - $ref: '#/components/parameters/RoleId'
+    get:
+      tags: [Roles]
+      operationId: getRole
+      summary: Get a role
+      description: Fetch a single role by ID.
+      responses:
+        '200':
+          description: The role.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Roles]
+      operationId: updateRole
+      summary: Update a role
+      description: >-
+        Replace a role's base fields and, when supplied, its permission and
+        agent sets wholesale. Renaming or repermissioning a built-in role is a
+        409. Requires roles.manage.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleUpdate'
+      responses:
+        '200':
+          description: Role updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [Roles]
+      operationId: deleteRole
+      summary: Delete a custom role
+      description: >-
+        Delete a custom role. Built-in roles cannot be deleted (409). Requires
+        roles.manage.
+      responses:
+        '204':
+          description: Role deleted.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  # -------------------------------------------------------------- Members ---
+  /members:
+    get:
+      tags: [Members]
+      operationId: listMembers
+      summary: List organization members
+      description: >-
+        List the organization's members with the roles assigned directly to
+        each. Requires members.manage or audit.view.
+      responses:
+        '200':
+          description: The organization's members.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /members/{memberId}/roles:
+    parameters:
+      - $ref: '#/components/parameters/MemberId'
+    put:
+      tags: [Members]
+      operationId: updateMemberRoles
+      summary: Replace a member's roles
+      description: >-
+        Replace the set of roles assigned directly to the member. Removing the
+        last Owner assignment is a 409. Requires members.manage.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberRolesUpdate'
+      responses:
+        '200':
+          description: The member's updated role set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Member'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
 components:
   securitySchemes:
@@ -866,6 +1059,20 @@ components:
       description: Approval request identifier.
       schema:
         $ref: '#/components/schemas/Id'
+    RoleId:
+      name: roleId
+      in: path
+      required: true
+      description: Role identifier.
+      schema:
+        $ref: '#/components/schemas/Id'
+    MemberId:
+      name: memberId
+      in: path
+      required: true
+      description: Member identifier.
+      schema:
+        $ref: '#/components/schemas/Id'
 
   responses:
     BadRequest:
@@ -882,6 +1089,18 @@ components:
             $ref: '#/components/schemas/Error'
     NotFound:
       description: The requested resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: The caller is authenticated but lacks the required permission.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: The request conflicts with the current state of the resource.
       content:
         application/json:
           schema:
@@ -1030,7 +1249,7 @@ components:
 
     Identity:
       type: object
-      required: [subject, organization_id, roles]
+      required: [subject, organization_id, roles, permissions]
       properties:
         subject:
           type: string
@@ -1043,9 +1262,19 @@ components:
           description: Principal email, when available.
         roles:
           type: array
-          description: Roles granted to the principal.
+          description: >-
+            Coarse member_role claim carried on the token (identity metadata;
+            no longer an authorization input, ADR-0006 §5).
           items:
             type: string
+        permissions:
+          type: array
+          description: >-
+            The caller's effective permission set, resolved from their roles
+            per request (ADR-0006 §7). Used by the admin UI to show/hide admin
+            actions.
+          items:
+            $ref: '#/components/schemas/Permission'
 
     # ---- Agents ----
     Agent:
@@ -1642,3 +1871,148 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Budget'
+
+    # ---- RBAC ----
+    Permission:
+      type: string
+      description: >-
+        A coarse-grained capability verb from the fixed application catalog
+        (ADR-0006 §2).
+      enum:
+        - agents.manage
+        - policies.manage
+        - endpoints.manage
+        - budgets.manage
+        - members.manage
+        - roles.manage
+        - approvals.decide
+        - audit.view
+        - agents.run
+
+    RoleAgent:
+      type: object
+      description: One agent granted by a role, with optional per-grant tuning.
+      required: [agent_id]
+      properties:
+        agent_id:
+          $ref: '#/components/schemas/Id'
+        policy_version_id:
+          $ref: '#/components/schemas/Id'
+        max_fan_out:
+          type: integer
+          minimum: 0
+          description: Optional per-grant fan-out ceiling override.
+
+    Role:
+      type: object
+      required: [id, name, builtin, all_agents, permissions, agents, created_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        name:
+          type: string
+        description:
+          type: string
+        builtin:
+          type: boolean
+          description: Built-in roles have an immutable name and permission set.
+        all_agents:
+          type: boolean
+          description: When true, the role grants access to every agent in the org.
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Permission'
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleAgent'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    RoleList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+
+    RoleCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        all_agents:
+          type: boolean
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Permission'
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleAgent'
+
+    RoleUpdate:
+      type: object
+      description: >-
+        Partial update. Supplied fields replace the stored values; a supplied
+        permissions or agents array replaces that set wholesale.
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        all_agents:
+          type: boolean
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Permission'
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleAgent'
+
+    Member:
+      type: object
+      required: [id, email, active, roles]
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        active:
+          type: boolean
+        roles:
+          type: array
+          description: Roles assigned directly to the member.
+          items:
+            $ref: '#/components/schemas/Role'
+
+    MemberList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Member'
+
+    MemberRolesUpdate:
+      type: object
+      required: [role_ids]
+      properties:
+        role_ids:
+          type: array
+          description: The full set of role ids the member should hold directly.
+          items:
+            $ref: '#/components/schemas/Id'

@@ -44,6 +44,9 @@ func (f *fakeAgentVersionStore) ListByAgent(_ context.Context, agentID string) (
 	return f.listVersions, f.err
 }
 
+// fakeEntitlementStore backs the setAgentEntitlements handler tests (the legacy
+// grant surface); launch authorization now resolves through the accessResolver,
+// not entitlements.
 type fakeEntitlementStore struct {
 	ents      []store.Entitlement
 	err       error
@@ -167,15 +170,14 @@ func (f *fakeSessionTerminator) Terminate(_ context.Context, sessionID string) (
 type launchFixture struct {
 	agent    *fakeAgentStore
 	versions *fakeAgentVersionStore
-	ents     *fakeEntitlementStore
-	teams    *fakeTeamMembershipStore
+	resolver *fakeResolver
 	policies *fakePolicyVersionStore
 	writer   *fakeSessionLaunchWriter
 }
 
-// defaultLaunchFixture returns a fully entitled, correctly configured launch:
-// agent agt_1 in org-1, current version 4, a member entitlement for member-1
-// with max_fan_out 3, an agent-version fan-out of 5, and a boundary with
+// defaultLaunchFixture returns a fully authorized, correctly configured launch:
+// agent agt_1 in org-1, current version 4, a resolver that authorizes the run
+// with a max_fan_out of 3, an agent-version fan-out of 5, and a boundary with
 // fan_out_ceiling 8 — so a requested_fan_out of 10 clamps to 3.
 func defaultLaunchFixture() *launchFixture {
 	created := time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC)
@@ -191,10 +193,7 @@ func defaultLaunchFixture() *launchFixture {
 	return &launchFixture{
 		agent:    &fakeAgentStore{getAgent: storeAgent("agt_1", "org-1", "planner", nil, 4, created)},
 		versions: &fakeAgentVersionStore{byVersion: map[int]store.AgentVersion{4: av}},
-		ents: &fakeEntitlementStore{ents: []store.Entitlement{
-			{ID: "ent-1", AgentID: "agt_1", MemberID: strptr("member-1"), MaxFanOut: intptr(3)},
-		}},
-		teams: &fakeTeamMembershipStore{},
+		resolver: &fakeResolver{runOK: true, runGrant: store.RunGrant{MaxFanOut: intptr(3)}},
 		policies: &fakePolicyVersionStore{pv: store.PolicyVersion{
 			ID: "pv-1", PolicyID: "pol-1", Version: 7, ContentJSON: json.RawMessage(boundary),
 		}},
@@ -225,23 +224,22 @@ func launchHarness(t *testing.T, f *launchFixture) (http.Handler, http.Header, e
 
 func setLaunchSeams(t *testing.T, f *launchFixture) {
 	t.Helper()
-	oa, oav, oe, ot, op, ow := newAgentStore, newAgentVersionStore, newEntitlementStore, newTeamMembershipStore, newPolicyVersionStore, newSessionLaunchWriter
+	oa, oav, op, ow := newAgentStore, newAgentVersionStore, newPolicyVersionStore, newSessionLaunchWriter
 	newAgentStore = func(store.Querier) agentStore { return f.agent }
 	newAgentVersionStore = func(store.Querier) agentVersionStore { return f.versions }
-	newEntitlementStore = func(store.Querier) entitlementStore { return f.ents }
-	newTeamMembershipStore = func(store.Querier) teamMembershipReader { return f.teams }
 	newPolicyVersionStore = func(store.Querier) policyVersionStore { return f.policies }
 	newSessionLaunchWriter = func(*db.Pool) sessionLaunchWriter { return f.writer }
+	setResolver(t, f.resolver)
 	t.Cleanup(func() {
-		newAgentStore, newAgentVersionStore, newEntitlementStore, newTeamMembershipStore, newPolicyVersionStore, newSessionLaunchWriter = oa, oav, oe, ot, op, ow
+		newAgentStore, newAgentVersionStore, newPolicyVersionStore, newSessionLaunchWriter = oa, oav, op, ow
 	})
 }
 
 // ---- happy path -----------------------------------------------------------
 
-// TestLaunchSession is the end-to-end proof: a fully entitled caller gets a 201
-// with a verifiable bundle, a scoped proxy token whose hash (not raw form) is
-// what the writer stored, the effective (clamped) fan-out, and an active
+// TestLaunchSession is the end-to-end proof: a fully authorized caller gets a
+// 201 with a verifiable bundle, a scoped proxy token whose hash (not raw form)
+// is what the writer stored, the effective (clamped) fan-out, and an active
 // session whose params carry the resolved policy version.
 func TestLaunchSession(t *testing.T) {
 	f := defaultLaunchFixture()
@@ -266,12 +264,17 @@ func TestLaunchSession(t *testing.T) {
 	if len(body.ProxyToken) < 4 || body.ProxyToken[:4] != "dgp_" {
 		t.Errorf("proxy_token = %q, want dgp_ prefix", body.ProxyToken)
 	}
-	// requested 10 vs agent-version 5, boundary 8, entitlement 3 → min = 3.
+	// requested 10 vs agent-version 5, boundary 8, run grant 3 → min = 3.
 	if body.FanOutCeiling != 3 {
 		t.Errorf("fan_out_ceiling = %d, want 3 (clamped)", body.FanOutCeiling)
 	}
 	if body.ExpiresAt == nil {
 		t.Fatal("expires_at = nil, want the session lifetime")
+	}
+
+	// The resolver was asked to authorize member-1 for this agent.
+	if f.resolver.gotMemberID != "member-1" || f.resolver.gotAgentID != "agt_1" {
+		t.Errorf("resolver called with (%q, %q), want (member-1, agt_1)", f.resolver.gotMemberID, f.resolver.gotAgentID)
 	}
 
 	// The raw token is never stored: the writer sees only its SHA-256 hash.
@@ -325,36 +328,28 @@ func TestLaunchSession(t *testing.T) {
 	}
 }
 
-// TestLaunchSessionTeamEntitlement proves a caller with no direct grant is
-// entitled via team membership.
-func TestLaunchSessionTeamEntitlement(t *testing.T) {
+// TestLaunchSessionAllAgentsGrant proves an "all agents" run grant (no per-agent
+// tuning) launches against the agent version's own policy pin.
+func TestLaunchSessionAllAgentsGrant(t *testing.T) {
 	f := defaultLaunchFixture()
-	f.ents.ents = []store.Entitlement{
-		{ID: "ent-2", AgentID: "agt_1", TeamID: strptr("team-9"), PolicyVersionID: strptr("pv-override")},
-	}
-	f.teams.teams = []store.Team{{ID: "team-9", OrgID: "org-1", Name: "blue"}}
+	f.resolver.runGrant = store.RunGrant{AllAgents: true}
 	h, hdr, _ := launchHarness(t, f)
 
 	rec := doJSON(t, h, http.MethodPost, "/sessions/launch", `{"agent_id":"agt_1"}`, hdr)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body.String())
 	}
-	// The team entitlement's policy-version override wins over the agent version.
-	if f.policies.gotID != "pv-override" {
-		t.Errorf("resolved policy version = %q, want pv-override (entitlement override)", f.policies.gotID)
-	}
-	if f.teams.gotMemberID != "member-1" {
-		t.Errorf("team lookup member = %q, want member-1", f.teams.gotMemberID)
+	// No override → the agent version's pinned policy version is used.
+	if f.policies.gotID != "pv-1" {
+		t.Errorf("resolved policy version = %q, want pv-1 (agent-version pin)", f.policies.gotID)
 	}
 }
 
-// TestLaunchSessionEntitlementOverride proves a member entitlement's
-// policy-version override is used over the agent version's pin.
-func TestLaunchSessionEntitlementOverride(t *testing.T) {
+// TestLaunchSessionRunGrantPolicyOverride proves a run grant's policy-version
+// override is used over the agent version's pin.
+func TestLaunchSessionRunGrantPolicyOverride(t *testing.T) {
 	f := defaultLaunchFixture()
-	f.ents.ents = []store.Entitlement{
-		{ID: "ent-1", AgentID: "agt_1", MemberID: strptr("member-1"), PolicyVersionID: strptr("pv-override")},
-	}
+	f.resolver.runGrant = store.RunGrant{PolicyVersionID: strptr("pv-override")}
 	h, hdr, _ := launchHarness(t, f)
 
 	rec := doJSON(t, h, http.MethodPost, "/sessions/launch", `{"agent_id":"agt_1"}`, hdr)
@@ -362,7 +357,7 @@ func TestLaunchSessionEntitlementOverride(t *testing.T) {
 		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body.String())
 	}
 	if f.policies.gotID != "pv-override" {
-		t.Errorf("resolved policy version = %q, want pv-override", f.policies.gotID)
+		t.Errorf("resolved policy version = %q, want pv-override (grant override)", f.policies.gotID)
 	}
 }
 
@@ -452,12 +447,10 @@ func TestLaunchSessionNoPublishedVersion(t *testing.T) {
 }
 
 // TestLaunchSessionNotEntitled proves the one contract-sanctioned 403: the agent
-// exists in the caller's org but no entitlement matches.
+// exists in the caller's org but the resolver does not authorize the run.
 func TestLaunchSessionNotEntitled(t *testing.T) {
 	f := defaultLaunchFixture()
-	f.ents.ents = []store.Entitlement{
-		{ID: "ent-x", AgentID: "agt_1", MemberID: strptr("someone-else")},
-	}
+	f.resolver.runOK = false
 	h, hdr, _ := launchHarness(t, f)
 
 	rec := doJSON(t, h, http.MethodPost, "/sessions/launch", `{"agent_id":"agt_1"}`, hdr)
@@ -465,7 +458,23 @@ func TestLaunchSessionNotEntitled(t *testing.T) {
 		t.Fatalf("status = %d, want 403 (body %s)", rec.Code, rec.Body.String())
 	}
 	if f.writer.called {
-		t.Error("writer called for an unentitled caller")
+		t.Error("writer called for an unauthorized caller")
+	}
+}
+
+// TestLaunchSessionResolverError proves a resolver failure is a 500, never a
+// silent unbounded launch.
+func TestLaunchSessionResolverError(t *testing.T) {
+	f := defaultLaunchFixture()
+	f.resolver.runErr = context.DeadlineExceeded
+	h, hdr, _ := launchHarness(t, f)
+
+	rec := doJSON(t, h, http.MethodPost, "/sessions/launch", `{"agent_id":"agt_1"}`, hdr)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body %s)", rec.Code, rec.Body.String())
+	}
+	if f.writer.called {
+		t.Error("writer called after a resolver error")
 	}
 }
 
@@ -475,7 +484,7 @@ func TestLaunchSessionMisconfig(t *testing.T) {
 	t.Run("no effective policy version", func(t *testing.T) {
 		f := defaultLaunchFixture()
 		av := f.versions.byVersion[4]
-		av.PolicyVersionID = nil // and the entitlement carries no override
+		av.PolicyVersionID = nil // and the run grant carries no override
 		f.versions.byVersion[4] = av
 		h, hdr, _ := launchHarness(t, f)
 		rec := doJSON(t, h, http.MethodPost, "/sessions/launch", `{"agent_id":"agt_1"}`, hdr)
