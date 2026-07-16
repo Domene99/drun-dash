@@ -56,6 +56,82 @@ type StepView struct {
 	Decision  string
 }
 
+// copyScript is the tiny inline vanilla-JS copy helper included on the run page
+// (issue #294). The run view is hosted in a native webview with no macOS Edit
+// menu, so Cmd+C never fires and a member cannot copy the agent's replies or
+// code out of the conversation. This installs a single delegated click handler
+// on [data-copy] controls (the mc-copy buttons rendered on agent bubbles, final
+// answers, and code/diff blocks): it reads the target element's textContent and
+// writes it to the clipboard via the async Clipboard API, briefly showing a
+// "Copied" state. It degrades gracefully — when navigator.clipboard is missing
+// (older/insecure webviews) it selects the text instead and never throws. No
+// framework, no CDN.
+const copyScript = `<script>
+(function () {
+	function target(btn) {
+		var sel = btn.getAttribute("data-copy");
+		if (sel) {
+			var scope = btn.parentElement;
+			return (scope && scope.querySelector(sel)) || btn.closest(sel);
+		}
+		return btn.parentElement;
+	}
+	function textOf(el) {
+		if (!el) return "";
+		var clone = el.cloneNode(true);
+		var copies = clone.querySelectorAll(".mc-copy");
+		for (var i = 0; i < copies.length; i++) copies[i].remove();
+		return (clone.innerText || clone.textContent || "").replace(/^\s+|\s+$/g, "");
+	}
+	function selectText(el) {
+		if (!el) return;
+		try {
+			var sel = window.getSelection();
+			var range = document.createRange();
+			range.selectNodeContents(el);
+			sel.removeAllRanges();
+			sel.addRange(range);
+		} catch (e) { /* selection unsupported — nothing to do */ }
+	}
+	function flash(btn) {
+		var prev = btn.getAttribute("data-label") || btn.textContent;
+		btn.setAttribute("data-label", prev);
+		btn.classList.add("is-copied");
+		btn.textContent = "Copied";
+		setTimeout(function () {
+			btn.classList.remove("is-copied");
+			btn.textContent = prev;
+		}, 1200);
+	}
+	document.addEventListener("click", function (e) {
+		var btn = e.target.closest(".mc-copy");
+		if (!btn) return;
+		e.preventDefault();
+		var el = target(btn);
+		var value = textOf(el);
+		if (navigator.clipboard && navigator.clipboard.writeText) {
+			navigator.clipboard.writeText(value).then(function () { flash(btn); }, function () { selectText(el); });
+		} else {
+			selectText(el);
+		}
+	});
+})();
+</script>`
+
+// copyButton renders the small "Copy" affordance (issue #294). copySelector,
+// when non-empty, is a CSS selector resolved (by copyScript) within the button's
+// parent to find the element whose text is copied; empty means copy the button's
+// parent element. title is the accessible/hover hint. The rendered control is a
+// single line of HTML so it is safe to embed in an SSE `data:` step fragment.
+func copyButton(copySelector, title string) string {
+	s := `<button type="button" class="mc-copy" data-copy="` + templ.EscapeString(copySelector) + `"`
+	if title != "" {
+		s += ` title="` + templ.EscapeString(title) + `"`
+	}
+	s += `>Copy</button>`
+	return s
+}
+
 // RunPage renders the full run view inside the shared [Layout]: the session
 // summary, the bound engine's tool set (or the bind error), and — when the run
 // is ready — the conversation transcript and chat input.
@@ -87,6 +163,11 @@ func renderRunBody(w io.Writer, data RunData) error {
 	// uikit.Handler() so the governed app never depends on a CDN — matching the
 	// core htmx that uikit.Head links.
 	b.WriteString(`<script src="` + uikit.SSEExtensionURL() + `" defer></script>`)
+
+	// The tiny inline copy helper (issue #294): gives every mc-copy button a
+	// working Clipboard-API copy, so the agent's replies and code are copyable
+	// inside the native webview that has no Edit menu. Loaded only here.
+	b.WriteString(copyScript)
 
 	// Page header: agent name as the readable title, with a back link.
 	b.WriteString(`<div class="uk-page-header">`)
@@ -170,7 +251,8 @@ func renderRunBody(w io.Writer, data RunData) error {
 
 // chatForm renders the prominent directive composer. Submitting appends the turn
 // (the user's message plus a live-streaming assistant bubble) to the transcript
-// via HTMX.
+// via HTMX. The composer's <textarea> accepts paste normally in the webview — no
+// special handling is needed for pasting into a focused input (issue #294).
 func chatForm(sessionID string) string {
 	post := "/sessions/" + templ.EscapeString(sessionID) + "/turn"
 	return `<form class="mc-composer" hx-post="` + post + `" hx-target="#transcript" hx-swap="beforeend" hx-on::after-request="this.reset()">` +
@@ -201,13 +283,16 @@ func alertDanger(msg string) string {
 // TurnStarted renders the fragment appended to the transcript when a directive
 // is submitted: the member's message bubble, then an assistant bubble that
 // subscribes to the run's SSE stream and appends each step until the stream
-// sends `done`.
+// sends `done`. The assistant bubble carries a Copy button (issue #294) that
+// copies the whole streamed reply — the copyScript strips the button's own text.
 func TurnStarted(sessionID, directive string) templ.Component {
 	return templ.ComponentFunc(func(ctx context.Context, w io.Writer) error {
 		stream := "/sessions/" + templ.EscapeString(sessionID) + "/stream"
 		html := `<div class="mc-turn">` +
 			`<div class="mc-msg mc-msg--user">` + multiline(directive) + `</div>` +
-			`<div class="mc-msg mc-msg--agent" hx-ext="sse" sse-connect="` + stream + `" sse-swap="step" hx-swap="beforeend" sse-close="done"></div>` +
+			`<div class="mc-msg mc-msg--agent" hx-ext="sse" sse-connect="` + stream + `" sse-swap="step" hx-swap="beforeend" sse-close="done">` +
+			copyButton("", "Copy the agent's reply") +
+			`</div>` +
 			`</div>`
 		_, err := io.WriteString(w, html)
 		return err
@@ -227,7 +312,10 @@ func RenderStepFragment(s StepView) string {
 	case "tool_result":
 		return `<div class="mc-step mc-step--result">&#8627; <code>` + templ.EscapeString(s.ToolName) + `</code> result` + metaSpan(s) + `</div>`
 	case "final":
-		return `<div class="mc-step mc-step--final">` + multiline(s.Text) + `</div>`
+		// The final answer carries the model's text — often code the member
+		// wants to copy verbatim. Wrap it so a per-answer Copy button (issue
+		// #294) can target just the answer text.
+		return `<div class="mc-step mc-step--final"><span class="mc-final-text">` + multiline(s.Text) + `</span>` + copyButton(".mc-final-text", "Copy this answer") + `</div>`
 	case "blocked":
 		return `<div class="mc-step mc-step--blocked">&#9940; <code>` + templ.EscapeString(s.ToolName) + `</code> blocked by policy: ` + multiline(s.Text) + `</div>`
 	case "escalated":

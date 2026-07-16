@@ -92,6 +92,14 @@ native webview window.
     `POST /sessions/{id}/reject` commits nothing. The agent loop is never offered
     `session_commit`/`session_export`/`session_snapshot`, and the tool executor
     refuses them even if an escalation is (erroneously) approved.
+  - **Copy out (webview copy-paste, issue #294).** The run view is hosted in a
+    native webview with no macOS Edit menu, so Cmd+C never fires. The
+    transcript, bubbles, and steps are text-selectable (`user-select: text`), and
+    a small **Copy** button on each agent reply, final answer, and code/diff
+    `<pre>` block copies that element's text via the async Clipboard API — a tiny
+    inline vanilla-JS `[data-copy]` handler (`views/run.go`), no framework, no
+    CDN. It degrades to selecting the text when `navigator.clipboard` is
+    unavailable. Pasting into the directive input works normally.
   - **Escalations, approve/resume (§6).** A policy-gated tool call is blocked and
     raised as `POST /approvals` (structure-only context), shown as a pending
     "waiting for approval" step in the chat, and paused — the action does not run
@@ -157,7 +165,7 @@ no admin sidebar — the conversation is the surface), and the pages are built f
 uikit's `Card`, `Table`, `Button`, `Badge`, `Alert`, `EmptyState`, and `IDChip`.
 The only member-specific styling is the small conversation stylesheet in
 `views/styles.go` (transcript bubbles, tool-step chips, the diff/timeline
-panels), layered on uikit's tokens so it themes with the rest — the member app
+panels, the copy buttons), layered on uikit's tokens so it themes with the rest — the member app
 adds no design tokens and no bespoke component CSS.
 
 The `*.templ` files under `views/` are the source of truth; the committed

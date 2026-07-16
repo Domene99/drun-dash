@@ -110,7 +110,14 @@ func DiffReview(data DiffData) templ.Component {
 			b.WriteString(reviewButton(data.SessionID))
 		default:
 			b.WriteString(`<p class="uk-muted">Review the changes the agent made in the sandbox. Nothing is written to your host files until you approve.</p>`)
+			// The diff is a <pre> code block a member often needs to copy out;
+			// in the native webview (no Edit menu) the Copy button is the only
+			// way to get it (issue #294). copyScript resolves the button's
+			// data-copy=".mc-diff" within this wrapper.
+			b.WriteString(`<div class="mc-code">`)
+			b.WriteString(copyButton(".mc-diff", "Copy the diff"))
 			b.WriteString(`<pre class="mc-diff">` + templ.EscapeString(data.Diff) + `</pre>`)
+			b.WriteString(`</div>`)
 			commit := "/sessions/" + templ.EscapeString(data.SessionID) + "/commit"
 			reject := "/sessions/" + templ.EscapeString(data.SessionID) + "/reject"
 			b.WriteString(`<div class="mc-actions">`)
@@ -145,7 +152,10 @@ func CommitResult(data CommitData) templ.Component {
 		case data.Committed:
 			b.WriteString(`<div class="uk-alert uk-alert--success" role="status"><div class="uk-alert-body">Committed to your host files.</div></div>`)
 			if strings.TrimSpace(data.Detail) != "" {
+				b.WriteString(`<div class="mc-code">`)
+				b.WriteString(copyButton(".mc-diff", "Copy the committed diff"))
 				b.WriteString(`<pre class="mc-diff">` + templ.EscapeString(data.Detail) + `</pre>`)
+				b.WriteString(`</div>`)
 			}
 		case data.Rejected:
 			b.WriteString(`<p class="uk-muted">Rejected. Nothing was committed; the changes remain only in the sandbox.</p>`)
