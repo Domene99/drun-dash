@@ -73,6 +73,47 @@ func (s *ModelEndpointStore) ListByOrg(ctx context.Context, orgID string) ([]Mod
 	return eps, nil
 }
 
+// UpdateModelEndpointParams carries the mutable fields for
+// [ModelEndpointStore.Update]: the endpoint's identity/routing metadata and its
+// opaque secret_ref. The active flag is toggled separately via
+// [ModelEndpointStore.SetActive].
+type UpdateModelEndpointParams struct {
+	ID        string
+	Name      string
+	BaseURL   string
+	Provider  string
+	SecretRef string
+}
+
+// Update replaces the name, base_url, provider, and secret_ref of an existing
+// endpoint and returns the updated row. A rename colliding with another
+// (org_id, name) yields [ErrConflict]; a missing id yields [ErrNotFound].
+func (s *ModelEndpointStore) Update(ctx context.Context, p UpdateModelEndpointParams) (ModelEndpoint, error) {
+	const q = `UPDATE model_endpoints SET name = $2, base_url = $3, provider = $4, secret_ref = $5
+		WHERE id = $1 RETURNING ` + modelEndpointColumns
+	ep, err := scanModelEndpoint(s.db.QueryRow(ctx, q, p.ID, p.Name, p.BaseURL, p.Provider, p.SecretRef))
+	if err != nil {
+		return ModelEndpoint{}, fmt.Errorf("store: update model endpoint %q: %w", p.ID, mapError(err))
+	}
+	return ep, nil
+}
+
+// Delete removes the endpoint with the given id. It returns [ErrNotFound] if no
+// such endpoint exists. The backing sealed secret (if any) is not removed here:
+// the secret_ref is opaque to this store, so the caller deletes the secret
+// through the vault.
+func (s *ModelEndpointStore) Delete(ctx context.Context, id string) error {
+	const q = `DELETE FROM model_endpoints WHERE id = $1`
+	tag, err := s.db.Exec(ctx, q, id)
+	if err != nil {
+		return fmt.Errorf("store: delete model endpoint %q: %w", id, mapError(err))
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("store: delete model endpoint %q: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 // SetActive flips the active flag on the endpoint with the given id and returns
 // the updated row. It returns [ErrNotFound] if no such endpoint exists.
 func (s *ModelEndpointStore) SetActive(ctx context.Context, id string, active bool) (ModelEndpoint, error) {

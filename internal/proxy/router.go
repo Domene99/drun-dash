@@ -19,6 +19,7 @@ import (
 
 	"github.com/Domene99/drun-dash/internal/httpx"
 	"github.com/Domene99/drun-dash/internal/store"
+	"github.com/Domene99/drun-dash/internal/vault"
 )
 
 // NewRouter builds the HTTP router for the llm-proxy server, wrapping every
@@ -33,11 +34,11 @@ import (
 // The upstream base URL is read and validated once here (see newBroker); an
 // unset or invalid LLM_UPSTREAM_BASE_URL is not fatal — the broker route then
 // answers 502 upstream_unconfigured while /healthz stays up.
-func NewRouter(logger *slog.Logger, pool store.Querier) http.Handler {
+func NewRouter(logger *slog.Logger, pool store.Querier, v vault.Vault) http.Handler {
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID, httpx.Recoverer(logger), httpx.Logger(logger))
 
-	b := newBroker(logger, pool)
+	b := newBroker(logger, pool, v)
 
 	r.Get("/healthz", healthz)
 	r.Post("/v1/chat/completions", b.chatCompletions)

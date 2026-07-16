@@ -33,6 +33,7 @@ import (
 	"github.com/Domene99/drun-dash/internal/oidc"
 	"github.com/Domene99/drun-dash/internal/redis"
 	"github.com/Domene99/drun-dash/internal/store"
+	"github.com/Domene99/drun-dash/internal/vault"
 )
 
 // version is overridable at build time via
@@ -226,6 +227,17 @@ func buildAuthDeps(ctx context.Context, logger *slog.Logger, pool *db.Pool, redi
 		slog.Duration("session_ttl", sessionTTL),
 	)
 
+	// The writable secret vault (ADR-0009) seals provider api_keys the
+	// endpoint handlers store. It carries the process-wide master key
+	// (DRUNDASH_VAULT_KEY); an unset/invalid key leaves it disabled, so a
+	// create/patch that supplies an api_key returns a clear 400 while the rest
+	// of the API is unaffected. The same key must be configured on the proxy so
+	// keys sealed here open there.
+	secretVault, err := vault.NewDBVault(store.NewSecretStore(pool), vaultKeyFromEnv(logger))
+	if err != nil {
+		return nil, fmt.Errorf("control-plane: build vault: %w", err)
+	}
+
 	return &httpapi.Deps{
 		OIDC:             oidcVerifier,
 		Issuer:           issuer,
@@ -239,7 +251,39 @@ func buildAuthDeps(ctx context.Context, logger *slog.Logger, pool *db.Pool, redi
 		BundleSigningKID: bundleKID,
 		ProxyBaseURL:     proxyBaseURL,
 		SessionTTL:       sessionTTL,
+		Vault:            secretVault,
 	}, nil
+}
+
+// envVaultKey names the environment variable holding the vault master key: the
+// base64-encoded 32-byte AES-256 key that seals and opens db-backed secrets
+// (ADR-0009). It must match the value configured on the llm-proxy so a key
+// sealed by the control plane opens at proxy time.
+const envVaultKey = "DRUNDASH_VAULT_KEY"
+
+// vaultKeyFromEnv decodes the master key from DRUNDASH_VAULT_KEY. An unset
+// variable returns nil, which NewDBVault treats as a disabled backend (the API
+// boots; storing an api_key then returns a 400 until the key is set). A
+// set-but-malformed value (not base64, or not 32 bytes) is logged and also
+// treated as absent, so a bad key never crashes the boot.
+func vaultKeyFromEnv(logger *slog.Logger) []byte {
+	raw := os.Getenv(envVaultKey)
+	if raw == "" {
+		logger.Warn("DRUNDASH_VAULT_KEY not set; storing a model-endpoint api_key will return 400 until it is set",
+			slog.String("hint", "set DRUNDASH_VAULT_KEY to a base64-encoded 32-byte key to enable the writable vault"))
+		return nil
+	}
+	key, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		logger.Error("DRUNDASH_VAULT_KEY is not valid base64; the writable vault is disabled", slog.Any("error", err))
+		return nil
+	}
+	if len(key) != 32 {
+		logger.Error("DRUNDASH_VAULT_KEY must decode to 32 bytes; the writable vault is disabled",
+			slog.Int("got", len(key)))
+		return nil
+	}
+	return key
 }
 
 // buildOIDCVerifier constructs the OIDC verifier for the session exchange, or
