@@ -9,19 +9,22 @@ import (
 	"github.com/a-h/templ"
 )
 
-// This file holds the conversational run view (ADR-0004 §3–§5). Unlike the other
-// views it is authored directly as Go [templ.Component]s rather than generated
-// from a .templ file: the run view needs string-returning fragment renderers for
-// the Server-Sent Events stream (each step is one `data:` line), which templ's
-// component-only output does not express, and the console's build/test runs in a
-// network-isolated sandbox without the `templ` binary. The components compose
-// with the generated [Layout] exactly as the generated views do.
+// This file holds the conversational run view (ADR-0004 §3–§5) — the chat-first
+// member surface (ADR-0007 §4). Unlike the login/home pages it is authored
+// directly as Go [templ.Component]s rather than generated from a .templ file:
+// the run view needs string-returning fragment renderers for the Server-Sent
+// Events stream (each step is one `data:` line), which templ's component-only
+// output does not express. The markup is restyled onto the shared design system
+// (internal/uikit, ADR-0005): it uses uikit's uk-* component classes and the
+// small member conversation classes (mc-*, see styles.go) so it renders with the
+// same tokens as the admin audit view. It composes with the generated [Layout]
+// exactly as the generated views do.
 
 // sseExtensionURL is the htmx Server-Sent Events extension, pulled in only on the
 // run page (the login/home pages do not stream). It drives the live turn
 // transcript: the assistant bubble subscribes to the run's SSE stream and
 // appends each rendered step. Pinned for reproducibility, matching the core htmx
-// pin in [Layout].
+// pin uikit.Head links.
 const sseExtensionURL = "https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.2/dist/sse.min.js"
 
 // RunData is the view model for the run view: the launched session's non-secret
@@ -31,6 +34,7 @@ const sseExtensionURL = "https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.2/dist/ss
 type RunData struct {
 	SessionID    string
 	Agent        string
+	AgentName    string
 	ProxyBaseURL string
 	FanOut       string
 	Expires      string
@@ -65,8 +69,18 @@ func RunPage(data RunData) templ.Component {
 		body := templ.ComponentFunc(func(ctx context.Context, w io.Writer) error {
 			return renderRunBody(w, data)
 		})
-		return Layout("Run", true).Render(templ.WithChildren(ctx, body), w)
+		return Layout("Conversation", true).Render(templ.WithChildren(ctx, body), w)
 	})
+}
+
+// runTitle is the readable page title for a run: the agent's name, falling back
+// to its id when the name was not carried through (ADR-0005 §4 — a name, not a
+// UUID, is the headline).
+func runTitle(data RunData) string {
+	if strings.TrimSpace(data.AgentName) != "" {
+		return data.AgentName
+	}
+	return orDashStr(data.Agent)
 }
 
 // renderRunBody writes the run view's body markup.
@@ -75,73 +89,77 @@ func renderRunBody(w io.Writer, data RunData) error {
 
 	b.WriteString(`<script src="` + sseExtensionURL + `" defer></script>`)
 
-	// Session summary.
-	b.WriteString(`<section class="card">`)
-	b.WriteString(`<p><a href="/">&larr; All sessions</a></p>`)
-	b.WriteString(`<h1>Run · ` + templ.EscapeString(data.Agent) + `</h1>`)
-	b.WriteString(`<table><tbody>`)
-	summaryRow(&b, "Session", data.SessionID, true)
-	summaryRow(&b, "Proxy base URL", data.ProxyBaseURL, true)
-	summaryRow(&b, "Model", orDashStr(data.Model), true)
-	summaryRow(&b, "Fan-out", data.FanOut, false)
-	summaryRow(&b, "Expires", data.Expires, false)
-	b.WriteString(`</tbody></table>`)
+	// Page header: agent name as the readable title, with a back link.
+	b.WriteString(`<div class="uk-page-header">`)
+	b.WriteString(`<div class="uk-page-header-text">`)
+	b.WriteString(`<h1>` + templ.EscapeString(runTitle(data)) + `</h1>`)
+	b.WriteString(`<p class="uk-page-header-desc">A governed conversation — the model runs through the proxy, tools run in your local drun sandbox.</p>`)
+	b.WriteString(`</div>`)
+	b.WriteString(`<div class="uk-page-header-action"><a class="uk-btn uk-btn--secondary uk-btn--sm" href="/">&larr; All conversations</a></div>`)
+	b.WriteString(`</div>`)
+
+	// Session summary: readable facts, with the session UUID as a copyable chip.
+	b.WriteString(`<section class="uk-card">`)
+	b.WriteString(`<div class="mc-summary">`)
+	b.WriteString(idChip("Session", data.SessionID))
+	b.WriteString(`<span>Model <strong>` + templ.EscapeString(orDashStr(data.Model)) + `</strong></span>`)
+	b.WriteString(`<span>Fan-out <strong>` + templ.EscapeString(orDashStr(data.FanOut)) + `</strong></span>`)
+	b.WriteString(`<span>Expires <strong>` + templ.EscapeString(orDashStr(data.Expires)) + `</strong></span>`)
+	b.WriteString(`</div>`)
+	b.WriteString(`<p class="uk-muted">Proxy base URL: <span class="uk-mono">` + templ.EscapeString(orDashStr(data.ProxyBaseURL)) + `</span></p>`)
 	b.WriteString(`</section>`)
 
 	// Engine / tool-set state.
-	b.WriteString(`<section class="card">`)
-	b.WriteString(`<h2>Sandbox engine</h2>`)
+	b.WriteString(`<section class="uk-card">`)
+	b.WriteString(`<div class="uk-card-header"><h2>Sandbox engine</h2></div>`)
 	switch {
 	case data.EngineError != "":
-		b.WriteString(`<p class="error" role="alert">` + templ.EscapeString(data.EngineError) + `</p>`)
-		b.WriteString(`<p class="muted">Start your local drun engine and reload this page. Nothing runs until the engine is reachable.</p>`)
+		b.WriteString(alertDanger(data.EngineError))
+		b.WriteString(`<p class="uk-muted">Start your local drun engine and reload this page. Nothing runs until the engine is reachable.</p>`)
 	case data.EngineReady:
 		scope := "all discovered drun tools (the engine and proxy enforce policy at execution)"
 		if data.PolicyScoped {
 			scope = "the policy bundle's allowed tools"
 		}
-		b.WriteString(`<p class="muted">Bound to the local drun engine. Tools offered to the model: ` + templ.EscapeString(scope) + `.</p>`)
+		b.WriteString(`<p class="uk-muted">Bound to the local drun engine. Tools offered to the model: ` + templ.EscapeString(scope) + `.</p>`)
 		if len(data.Tools) > 0 {
-			b.WriteString(`<p class="tools">`)
-			for i, t := range data.Tools {
-				if i > 0 {
-					b.WriteString(" ")
-				}
-				b.WriteString(`<code>` + templ.EscapeString(t) + `</code>`)
+			b.WriteString(`<div class="mc-tools">`)
+			for _, t := range data.Tools {
+				b.WriteString(`<span class="uk-badge uk-badge--neutral uk-mono">` + templ.EscapeString(t) + `</span>`)
 			}
-			b.WriteString(`</p>`)
+			b.WriteString(`</div>`)
 		}
 	default:
-		b.WriteString(`<p class="muted">Connecting to the local drun engine…</p>`)
+		b.WriteString(`<p class="uk-muted">Connecting to the local drun engine…</p>`)
 	}
 	b.WriteString(`</section>`)
 
 	if data.EngineReady {
 		// Checkpoint timeline (design §6.3): HTMX-refreshed fragment that shows
 		// the run's checkpoints (and any forks) as the loop proceeds.
-		b.WriteString(`<section class="card">`)
-		b.WriteString(`<h2>Checkpoint timeline</h2>`)
-		b.WriteString(`<div id="timeline" hx-get="/sessions/` + templ.EscapeString(data.SessionID) + `/timeline" hx-trigger="load, every 5s"><p class="muted">Loading timeline…</p></div>`)
+		b.WriteString(`<section class="uk-card">`)
+		b.WriteString(`<div class="uk-card-header"><h2>Checkpoint timeline</h2></div>`)
+		b.WriteString(`<div id="timeline" hx-get="/sessions/` + templ.EscapeString(data.SessionID) + `/timeline" hx-trigger="load, every 5s"><p class="uk-muted">Loading timeline…</p></div>`)
 		b.WriteString(`</section>`)
 
 		// Diff-before-commit (design §6.3): the only path to host files, gated
 		// on an explicit member review + approve action.
-		b.WriteString(`<section class="card">`)
-		b.WriteString(`<h2>Host changes</h2>`)
-		b.WriteString(`<p class="muted">The agent's work stays in the sandbox. Nothing is written to your host files until you review the diff and approve.</p>`)
+		b.WriteString(`<section class="uk-card">`)
+		b.WriteString(`<div class="uk-card-header"><h2>Host changes</h2></div>`)
+		b.WriteString(`<p class="uk-muted">The agent's work stays in the sandbox. Nothing is written to your host files until you review the diff and approve.</p>`)
 		b.WriteString(`<div id="hostchanges">` + reviewButton(data.SessionID) + `</div>`)
 		b.WriteString(`</section>`)
 	}
 
 	// Conversation.
-	b.WriteString(`<section class="card">`)
-	b.WriteString(`<h2>Conversation</h2>`)
-	b.WriteString(`<div id="transcript"></div>`)
+	b.WriteString(`<section class="uk-card">`)
+	b.WriteString(`<div class="uk-card-header"><h2>Conversation</h2></div>`)
+	b.WriteString(`<div id="transcript" class="mc-transcript"></div>`)
 	switch {
 	case data.ModelMissing:
-		b.WriteString(`<p class="error" role="alert">No model is configured. Set MEMBER_CONSOLE_MODEL to enable runs.</p>`)
+		b.WriteString(alertDanger("No model is configured. Set MEMBER_CONSOLE_MODEL to enable runs."))
 	case !data.EngineReady:
-		b.WriteString(`<p class="muted">The chat is available once the drun engine is bound.</p>`)
+		b.WriteString(`<p class="uk-muted">The chat is available once the drun engine is bound.</p>`)
 	default:
 		b.WriteString(chatForm(data.SessionID))
 	}
@@ -151,35 +169,46 @@ func renderRunBody(w io.Writer, data RunData) error {
 	return err
 }
 
-// chatForm renders the directive input. Submitting appends the turn (the user's
-// message plus a live-streaming assistant bubble) to the transcript via HTMX.
+// chatForm renders the prominent directive composer. Submitting appends the turn
+// (the user's message plus a live-streaming assistant bubble) to the transcript
+// via HTMX.
 func chatForm(sessionID string) string {
 	post := "/sessions/" + templ.EscapeString(sessionID) + "/turn"
-	return `<form class="chat" hx-post="` + post + `" hx-target="#transcript" hx-swap="beforeend" hx-on::after-request="this.reset()">` +
-		`<textarea name="directive" rows="3" placeholder="Describe what the agent should do…" required></textarea>` +
-		`<button type="submit" class="primary">Send</button>` +
+	return `<form class="mc-composer" hx-post="` + post + `" hx-target="#transcript" hx-swap="beforeend" hx-on::after-request="this.reset()">` +
+		`<textarea class="uk-textarea" name="directive" rows="3" placeholder="Describe what the agent should do…" required></textarea>` +
+		`<div class="mc-composer-actions"><button type="submit" class="uk-btn uk-btn--primary">Send</button></div>` +
 		`</form>`
 }
 
-// summaryRow writes one label/value row of the session summary, monospacing the
-// value when mono is set.
-func summaryRow(b *strings.Builder, label, value string, mono bool) {
-	cls := ""
-	if mono {
-		cls = ` class="mono"`
+// idChip renders a copyable, monospaced, truncated identifier — the shared uikit
+// ID chip (ADR-0005 §4), emitted as a string so it composes with the SSE-driven
+// run view's string builder. Clicking copies the full id via theme-toggle.js.
+func idChip(label, id string) string {
+	esc := templ.EscapeString(id)
+	s := `<button type="button" class="uk-id-chip" data-uk-copy="` + esc + `" title="Copy ` + esc + `">`
+	if label != "" {
+		s += `<span class="uk-muted">` + templ.EscapeString(label) + `</span>`
 	}
-	b.WriteString(`<tr><th>` + templ.EscapeString(label) + `</th><td` + cls + `>` + templ.EscapeString(orDashStr(value)) + `</td></tr>`)
+	s += `<span class="uk-id-chip-value">` + templ.EscapeString(shortID(id)) + `</span></button>`
+	return s
+}
+
+// alertDanger renders an inline danger alert (uikit) as a string for the run
+// view's string builder.
+func alertDanger(msg string) string {
+	return `<div class="uk-alert uk-alert--danger" role="alert"><div class="uk-alert-body">` + templ.EscapeString(msg) + `</div></div>`
 }
 
 // TurnStarted renders the fragment appended to the transcript when a directive
-// is submitted: the member's message, then an assistant bubble that subscribes
-// to the run's SSE stream and appends each step until the stream sends `done`.
+// is submitted: the member's message bubble, then an assistant bubble that
+// subscribes to the run's SSE stream and appends each step until the stream
+// sends `done`.
 func TurnStarted(sessionID, directive string) templ.Component {
 	return templ.ComponentFunc(func(ctx context.Context, w io.Writer) error {
 		stream := "/sessions/" + templ.EscapeString(sessionID) + "/stream"
-		html := `<div class="turn">` +
-			`<div class="msg user">` + multiline(directive) + `</div>` +
-			`<div class="msg agent" hx-ext="sse" sse-connect="` + stream + `" sse-swap="step" hx-swap="beforeend" sse-close="done"></div>` +
+		html := `<div class="mc-turn">` +
+			`<div class="mc-msg mc-msg--user">` + multiline(directive) + `</div>` +
+			`<div class="mc-msg mc-msg--agent" hx-ext="sse" sse-connect="` + stream + `" sse-swap="step" hx-swap="beforeend" sse-close="done"></div>` +
 			`</div>`
 		_, err := io.WriteString(w, html)
 		return err
@@ -193,17 +222,17 @@ func TurnStarted(sessionID, directive string) templ.Component {
 func RenderStepFragment(s StepView) string {
 	switch s.Kind {
 	case "model_call":
-		return `<div class="step model">Calling the model…</div>`
+		return `<div class="mc-step mc-step--model">Calling the model…</div>`
 	case "tool_call":
-		return `<div class="step tool">&#128295; <code>` + templ.EscapeString(s.ToolName) + `</code>` + metaSpan(s) + `</div>`
+		return `<div class="mc-step mc-step--tool">&#128295; <code>` + templ.EscapeString(s.ToolName) + `</code>` + metaSpan(s) + `</div>`
 	case "tool_result":
-		return `<div class="step result">&#8627; <code>` + templ.EscapeString(s.ToolName) + `</code> result` + metaSpan(s) + `</div>`
+		return `<div class="mc-step mc-step--result">&#8627; <code>` + templ.EscapeString(s.ToolName) + `</code> result` + metaSpan(s) + `</div>`
 	case "final":
-		return `<div class="step final">` + multiline(s.Text) + `</div>`
+		return `<div class="mc-step mc-step--final">` + multiline(s.Text) + `</div>`
 	case "blocked":
-		return `<div class="step blocked">&#9940; <code>` + templ.EscapeString(s.ToolName) + `</code> blocked by policy: ` + multiline(s.Text) + `</div>`
+		return `<div class="mc-step mc-step--blocked">&#9940; <code>` + templ.EscapeString(s.ToolName) + `</code> blocked by policy: ` + multiline(s.Text) + `</div>`
 	case "escalated":
-		return `<div class="step escalated"><code>` + templ.EscapeString(s.ToolName) + `</code> escalation: ` + templ.EscapeString(orDashStr(s.Decision)) + `</div>`
+		return `<div class="mc-step mc-step--escalated"><code>` + templ.EscapeString(s.ToolName) + `</code> escalation: ` + templ.EscapeString(orDashStr(s.Decision)) + `</div>`
 	default:
 		return ""
 	}
@@ -211,7 +240,7 @@ func RenderStepFragment(s StepView) string {
 
 // RenderErrorFragment renders a turn-ending error as a single-line step fragment.
 func RenderErrorFragment(msg string) string {
-	return `<div class="step error" role="alert">` + multiline(msg) + `</div>`
+	return `<div class="mc-step mc-step--error" role="alert">` + multiline(msg) + `</div>`
 }
 
 // metaSpan renders the structure-only shape/size of a tool call's arguments or
@@ -220,7 +249,7 @@ func metaSpan(s StepView) string {
 	if !s.HasMeta {
 		return ""
 	}
-	return ` <span class="meta">(` + templ.EscapeString(orDashStr(s.ValueType)) + `, ` + strconv.Itoa(s.ByteSize) + ` B)</span>`
+	return ` <span class="mc-step-meta">(` + templ.EscapeString(orDashStr(s.ValueType)) + `, ` + strconv.Itoa(s.ByteSize) + ` B)</span>`
 }
 
 // multiline escapes text for HTML and converts newlines to <br> so it survives
@@ -254,12 +283,12 @@ func RenderEscalationFragment(action, approvalID, status string) string {
 		if approvalID != "" {
 			id = ` <code>` + templ.EscapeString(approvalID) + `</code>`
 		}
-		return `<div class="step escalated">&#9203; ` + code + ` — waiting for approval` + id + `…</div>`
+		return `<div class="mc-step mc-step--escalated">&#9203; ` + code + ` — waiting for approval` + id + `…</div>`
 	case "approved":
-		return `<div class="step escalated">&#9989; ` + code + ` — approved; resuming the action</div>`
+		return `<div class="mc-step mc-step--escalated">&#9989; ` + code + ` — approved; resuming the action</div>`
 	case "error":
-		return `<div class="step escalated">&#9888; ` + code + ` — could not raise an approval; denied</div>`
+		return `<div class="mc-step mc-step--escalated">&#9888; ` + code + ` — could not raise an approval; denied</div>`
 	default:
-		return `<div class="step escalated">&#9940; ` + code + ` — ` + templ.EscapeString(orDashStr(status)) + `; not run</div>`
+		return `<div class="mc-step mc-step--escalated">&#9940; ` + code + ` — ` + templ.EscapeString(orDashStr(status)) + `; not run</div>`
 	}
 }

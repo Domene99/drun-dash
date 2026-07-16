@@ -3,9 +3,9 @@
 // templ: version: v0.2.793
 // Package views holds the server-rendered templ components for the drun-dash
 
-// member console: the shared HTML layout, the device-flow login page, and the
+// member console: the shared HTML shell, the device-flow login page, the
 
-// entitled-agent home page.
+// chat-first agent-picker home page, and the conversational run view.
 
 //
 
@@ -16,6 +16,20 @@
 // plane or import internal/memberui, so the dependency edge runs one way
 
 // (internal/memberui -> views) and stays cycle-free.
+
+//
+
+// The design system is the shared internal/uikit package (ADR-0005): its Head,
+
+// Shell, TopBar, Card, Table, Button, Badge, Alert, EmptyState, IDChip, and
+
+// form components are composed here so the member app and the admin dashboard
+
+// cannot drift. This package adds no design tokens and no bespoke component CSS;
+
+// the only member-specific styling is the small conversation stylesheet in
+
+// styles.go, layered on uikit's tokens.
 
 //
 
@@ -32,18 +46,15 @@ package views
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-// htmxScriptURL is the CDN location of the HTMX runtime pulled into every page
-// by [Layout]. HTMX powers the login page's approval poller and the home page's
-// launch/terminate section swaps; pinning an exact version keeps behavior
-// reproducible. Swap this for a vendored asset if serving from a CDN is
-// undesirable in your deployment.
-const htmxScriptURL = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"
+import "github.com/Domene99/drun-dash/internal/uikit"
 
-// Layout is the base HTML shell shared by every member-console page. It renders
-// the document head (including the HTMX script and minimal styling) and a top
-// bar, then yields to the caller-supplied body via templ's children mechanism.
-// showNav toggles the signed-in navigation (a Sign out button); the login page
-// passes false.
+// Layout is the base HTML shell shared by every member-console page. It is the
+// member "minimal" variant of the shared design system (ADR-0005 §3): uikit.Head
+// links the content-hashed stylesheet, HTMX, and the theme script (and, via its
+// Extra slot, the member conversation stylesheet); uikit.Shell renders the frame
+// with a top bar and NO admin sidebar — the conversation is the surface. showNav
+// toggles the signed-in top-bar user menu (Sign out); the login page passes
+// false. Page content is supplied by the caller via templ's children.
 func Layout(title string, showNav bool) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -65,51 +76,90 @@ func Layout(title string, showNav bool) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var2 string
-		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(title)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `layout.templ`, Line: 33, Col: 17}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(" · drun-dash member console</title><script src=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var3 string
-		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(htmxScriptURL)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `layout.templ`, Line: 34, Col: 30}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("\" defer></script><style>\n\t\t\t\t:root { color-scheme: light dark; }\n\t\t\t\t* { box-sizing: border-box; }\n\t\t\t\tbody {\n\t\t\t\t\tmargin: 0;\n\t\t\t\t\tfont-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;\n\t\t\t\t\tline-height: 1.5;\n\t\t\t\t\tbackground: #f6f7f9;\n\t\t\t\t\tcolor: #1c2430;\n\t\t\t\t}\n\t\t\t\t.topnav {\n\t\t\t\t\tdisplay: flex;\n\t\t\t\t\talign-items: center;\n\t\t\t\t\tgap: 1.5rem;\n\t\t\t\t\tpadding: 0.75rem 1.5rem;\n\t\t\t\t\tbackground: #0f1b2d;\n\t\t\t\t\tcolor: #fff;\n\t\t\t\t}\n\t\t\t\t.topnav .brand { font-weight: 700; letter-spacing: 0.02em; }\n\t\t\t\t.topnav form.logout { margin-left: auto; }\n\t\t\t\t.topnav a { color: #cdd7e5; text-decoration: none; font-size: 0.9rem; }\n\t\t\t\t.topnav a:hover { color: #fff; }\n\t\t\t\t.navlinks { display: flex; gap: 1rem; }\n\t\t\t\t.topnav button {\n\t\t\t\t\tbackground: transparent;\n\t\t\t\t\tborder: 1px solid #35506f;\n\t\t\t\t\tcolor: #cdd7e5;\n\t\t\t\t\tborder-radius: 4px;\n\t\t\t\t\tpadding: 0.3rem 0.75rem;\n\t\t\t\t\tcursor: pointer;\n\t\t\t\t}\n\t\t\t\tmain { max-width: 60rem; margin: 1.5rem auto; padding: 0 1.5rem; }\n\t\t\t\t.card {\n\t\t\t\t\tbackground: #fff;\n\t\t\t\t\tborder: 1px solid #e2e6eb;\n\t\t\t\t\tborder-radius: 8px;\n\t\t\t\t\tpadding: 1.25rem;\n\t\t\t\t\tmargin-bottom: 1.25rem;\n\t\t\t\t}\n\t\t\t\th1 { font-size: 1.4rem; margin: 0 0 0.75rem; }\n\t\t\t\th2 { font-size: 1.1rem; margin: 0 0 0.5rem; }\n\t\t\t\t.muted { color: #667085; }\n\t\t\t\t.error { color: #b42318; font-weight: 600; }\n\t\t\t\t.code {\n\t\t\t\t\tfont-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n\t\t\t\t\tfont-size: 1.8rem;\n\t\t\t\t\tfont-weight: 700;\n\t\t\t\t\tletter-spacing: 0.15em;\n\t\t\t\t}\n\t\t\t\ttable { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }\n\t\t\t\tth, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #eceff3; font-size: 0.9rem; }\n\t\t\t\tth { color: #667085; font-weight: 600; }\n\t\t\t\ttd.num { text-align: right; font-variant-numeric: tabular-nums; }\n\t\t\t\ttd.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }\n\t\t\t\tbutton {\n\t\t\t\t\tborder: 1px solid #cbd5e1;\n\t\t\t\t\tbackground: #fff;\n\t\t\t\t\tborder-radius: 4px;\n\t\t\t\t\tpadding: 0.3rem 0.85rem;\n\t\t\t\t\tcursor: pointer;\n\t\t\t\t\tfont-size: 0.85rem;\n\t\t\t\t}\n\t\t\t\tbutton.primary { background: #1d4ed8; color: #fff; border: 0; }\n\t\t\t\tbutton.deny { border-color: #f0c2bc; color: #b42318; }\n\t\t\t\t.badge { background: #1d4ed8; color: #fff; border-radius: 4px; padding: 0 0.4rem; font-size: 0.7rem; vertical-align: middle; }\n\t\t\t\t.ok { color: #067647; font-weight: 600; }\n\t\t\t\t.meta { color: #667085; font-size: 0.8rem; }\n\t\t\t\tol.timeline { margin: 0.5rem 0; padding-left: 1.2rem; }\n\t\t\t\tol.timeline li { margin: 0.15rem 0; }\n\t\t\t\tpre.diff { background: #0f1b2d; color: #cdd7e5; padding: 0.75rem; border-radius: 6px; overflow: auto; font-size: 0.8rem; max-height: 24rem; white-space: pre; }\n\t\t\t\t.actions { margin-top: 0.5rem; display: flex; gap: 0.5rem; }\n\t\t\t\tfieldset { border: 1px solid #e2e6eb; border-radius: 6px; margin: 0.5rem 0; }\n\t\t\t\tlabel.agent { display: inline-block; margin: 0.2rem 0.6rem 0.2rem 0; }\n\t\t\t\ttextarea { width: 100%; font-family: inherit; font-size: 0.9rem; padding: 0.4rem; border: 1px solid #cbd5e1; border-radius: 4px; }\n\t\t\t\t.step { padding: 0.15rem 0; font-size: 0.88rem; }\n\t\t\t\t.msg { padding: 0.3rem 0.5rem; margin: 0.2rem 0; border-radius: 6px; }\n\t\t\t\t.msg.user { background: #eef2ff; }\n\t\t\t\t.msg.agent { background: #f6f7f9; }\n\t\t\t\t.chat { margin-top: 0.75rem; }\n\t\t\t</style></head><body><header class=\"topnav\"><span class=\"brand\">drun-dash · member console</span> ")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		if showNav {
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<nav class=\"navlinks\"><a href=\"/\">Home</a> <a href=\"/matrix\">Matrix</a></nav><form method=\"post\" action=\"/logout\" class=\"logout\"><button type=\"submit\">Sign out</button></form>")
+		templ_7745c5c3_Var2 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+			templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+			if !templ_7745c5c3_IsBuffer {
+				defer func() {
+					templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+					if templ_7745c5c3_Err == nil {
+						templ_7745c5c3_Err = templ_7745c5c3_BufErr
+					}
+				}()
+			}
+			ctx = templ.InitializeContext(ctx)
+			templ_7745c5c3_Err = templ_7745c5c3_Var1.Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</header><main>")
+			return templ_7745c5c3_Err
+		})
+		templ_7745c5c3_Err = uikit.Shell(uikit.ShellConfig{
+			Head: uikit.Head(uikit.HeadConfig{Title: title, Extra: memberHead()}),
+			TopBar: uikit.TopBar(uikit.TopBarConfig{
+				OrgName:     "drun-dash",
+				Environment: "member console",
+				UserMenu:    memberUserMenu(showNav),
+			}),
+		}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var2), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templ_7745c5c3_Var1.Render(ctx, templ_7745c5c3_Buffer)
+		return templ_7745c5c3_Err
+	})
+}
+
+// SignOut renders the top-bar user menu's Sign out control: a POST /logout form
+// styled with the shared ghost button so it sits quietly beside the theme
+// toggle. It is shown only when the member is signed in (see memberUserMenu).
+func SignOut() templ.Component {
+	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
+			return templ_7745c5c3_CtxErr
+		}
+		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+		if !templ_7745c5c3_IsBuffer {
+			defer func() {
+				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+				if templ_7745c5c3_Err == nil {
+					templ_7745c5c3_Err = templ_7745c5c3_BufErr
+				}
+			}()
+		}
+		ctx = templ.InitializeContext(ctx)
+		templ_7745c5c3_Var3 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var3 == nil {
+			templ_7745c5c3_Var3 = templ.NopComponent
+		}
+		ctx = templ.ClearChildren(ctx)
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<form method=\"post\" action=\"/logout\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</main></body></html>")
+		templ_7745c5c3_Var4 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+			templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+			if !templ_7745c5c3_IsBuffer {
+				defer func() {
+					templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+					if templ_7745c5c3_Err == nil {
+						templ_7745c5c3_Err = templ_7745c5c3_BufErr
+					}
+				}()
+			}
+			ctx = templ.InitializeContext(ctx)
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("Sign out")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			return templ_7745c5c3_Err
+		})
+		templ_7745c5c3_Err = uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonGhost, Type: "submit"}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var4), templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</form>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

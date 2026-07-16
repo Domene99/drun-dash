@@ -5,16 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
-// newTestClient wires a Client at a mock control-plane whose handler is fn.
+// newTestClient wires a Client at a mock control-plane whose handler is fn. It
+// serves the handler in-memory through an http.RoundTripper (no socket bind, via
+// handlerClient) so the client tests run inside the network-isolated drun
+// sandbox as well as on a host.
 func newTestClient(t *testing.T, fn http.HandlerFunc) *Client {
 	t.Helper()
-	srv := httptest.NewServer(fn)
-	t.Cleanup(srv.Close)
-	return NewClient(srv.URL, srv.Client())
+	return NewClient("http://cp", handlerClient(fn))
 }
 
 func TestStartDeviceAuthorization(t *testing.T) {

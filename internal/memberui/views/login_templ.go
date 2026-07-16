@@ -8,6 +8,8 @@ package views
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
+import "github.com/Domene99/drun-dash/internal/uikit"
+
 // Login renders the device-authorization sign-in page. It shows the user code
 // the member confirms in the admin UI and a link to the verification page, then
 // embeds the approval poller (via [LoginPoll]) which watches for the member to
@@ -46,98 +48,146 @@ func Login(data LoginData) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<section class=\"card\"><h1>Sign in</h1>")
+			templ_7745c5c3_Err = uikit.PageHeader(uikit.PageHeaderConfig{
+				Title:       "Sign in",
+				Description: "Approve this device in the drun-dash admin UI to sign in.",
+			}).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			if data.Error != "" {
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<p class=\"error\" role=\"alert\">")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var3 string
-				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(data.Error)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `login.templ`, Line: 13, Col: 46}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</p><p class=\"muted\">Reload the page to try again.</p>")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-			} else {
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<p class=\"muted\">Approve this device in the drun-dash admin UI to sign in. Confirm the code below matches, then approve the request.</p><p class=\"code\">")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var4 string
-				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(data.UserCode)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `login.templ`, Line: 20, Col: 35}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</p>")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				if data.VerificationURIComplete != "" {
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<p><a href=\"")
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					var templ_7745c5c3_Var5 templ.SafeURL = templ.SafeURL(data.VerificationURIComplete)
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(string(templ_7745c5c3_Var5)))
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("\" target=\"_blank\" rel=\"noopener\">Open the approval page</a></p>")
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-				} else if data.VerificationURI != "" {
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<p>Go to <a href=\"")
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					var templ_7745c5c3_Var6 templ.SafeURL = templ.SafeURL(data.VerificationURI)
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(string(templ_7745c5c3_Var6)))
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("\" target=\"_blank\" rel=\"noopener\">")
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					var templ_7745c5c3_Var7 string
-					templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(data.VerificationURI)
-					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `login.templ`, Line: 30, Col: 107}
-					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</a> and enter the code.</p>")
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(" ")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = LoginPoll(PollData{Pending: true, IntervalSeconds: data.IntervalSeconds, Message: "Waiting for approval…"}).Render(ctx, templ_7745c5c3_Buffer)
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(" ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</section>")
+			templ_7745c5c3_Var3 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+				if !templ_7745c5c3_IsBuffer {
+					defer func() {
+						templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+						if templ_7745c5c3_Err == nil {
+							templ_7745c5c3_Err = templ_7745c5c3_BufErr
+						}
+					}()
+				}
+				ctx = templ.InitializeContext(ctx)
+				if data.Error != "" {
+					templ_7745c5c3_Var4 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+						templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+						templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+						if !templ_7745c5c3_IsBuffer {
+							defer func() {
+								templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+								if templ_7745c5c3_Err == nil {
+									templ_7745c5c3_Err = templ_7745c5c3_BufErr
+								}
+							}()
+						}
+						ctx = templ.InitializeContext(ctx)
+						var templ_7745c5c3_Var5 string
+						templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(data.Error)
+						if templ_7745c5c3_Err != nil {
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `login.templ`, Line: 19, Col: 17}
+						}
+						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
+						if templ_7745c5c3_Err != nil {
+							return templ_7745c5c3_Err
+						}
+						return templ_7745c5c3_Err
+					})
+					templ_7745c5c3_Err = uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger, Title: "Could not start sign-in"}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var4), templ_7745c5c3_Buffer)
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(" <p class=\"uk-muted\">Reload the page to try again.</p>")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+				} else {
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<p class=\"uk-muted\">Confirm the code below matches, then approve the request.</p><p class=\"mc-usercode\">")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var6 string
+					templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(data.UserCode)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `login.templ`, Line: 24, Col: 42}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</p>")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					if data.VerificationURIComplete != "" {
+						templ_7745c5c3_Var7 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+							templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+							templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+							if !templ_7745c5c3_IsBuffer {
+								defer func() {
+									templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+									if templ_7745c5c3_Err == nil {
+										templ_7745c5c3_Err = templ_7745c5c3_BufErr
+									}
+								}()
+							}
+							ctx = templ.InitializeContext(ctx)
+							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("Open the approval page")
+							if templ_7745c5c3_Err != nil {
+								return templ_7745c5c3_Err
+							}
+							return templ_7745c5c3_Err
+						})
+						templ_7745c5c3_Err = uikit.ButtonLink(uikit.ButtonLinkConfig{
+							Variant: uikit.ButtonPrimary,
+							Href:    data.VerificationURIComplete,
+							Attrs:   templ.Attributes{"target": "_blank", "rel": "noopener"},
+						}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var7), templ_7745c5c3_Buffer)
+						if templ_7745c5c3_Err != nil {
+							return templ_7745c5c3_Err
+						}
+					} else if data.VerificationURI != "" {
+						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<p>Go to <a href=\"")
+						if templ_7745c5c3_Err != nil {
+							return templ_7745c5c3_Err
+						}
+						var templ_7745c5c3_Var8 templ.SafeURL = templ.SafeURL(data.VerificationURI)
+						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(string(templ_7745c5c3_Var8)))
+						if templ_7745c5c3_Err != nil {
+							return templ_7745c5c3_Err
+						}
+						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("\" target=\"_blank\" rel=\"noopener\">")
+						if templ_7745c5c3_Err != nil {
+							return templ_7745c5c3_Err
+						}
+						var templ_7745c5c3_Var9 string
+						templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(data.VerificationURI)
+						if templ_7745c5c3_Err != nil {
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `login.templ`, Line: 36, Col: 107}
+						}
+						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
+						if templ_7745c5c3_Err != nil {
+							return templ_7745c5c3_Err
+						}
+						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</a> and enter the code.</p>")
+						if templ_7745c5c3_Err != nil {
+							return templ_7745c5c3_Err
+						}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(" ")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = LoginPoll(PollData{Pending: true, IntervalSeconds: data.IntervalSeconds, Message: "Waiting for approval…"}).Render(ctx, templ_7745c5c3_Buffer)
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+				}
+				return templ_7745c5c3_Err
+			})
+			templ_7745c5c3_Err = uikit.Card(uikit.CardConfig{}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var3), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -171,9 +221,9 @@ func LoginPoll(data PollData) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var8 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var8 == nil {
-			templ_7745c5c3_Var8 = templ.NopComponent
+		templ_7745c5c3_Var10 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var10 == nil {
+			templ_7745c5c3_Var10 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
 		if data.Pending {
@@ -181,25 +231,25 @@ func LoginPoll(data PollData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var9 string
-			templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(triggerEvery(data.IntervalSeconds))
+			var templ_7745c5c3_Var11 string
+			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(triggerEvery(data.IntervalSeconds))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `login.templ`, Line: 49, Col: 50}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `login.templ`, Line: 55, Col: 50}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("\" hx-target=\"#poll\" hx-swap=\"outerHTML\"><p class=\"muted\">")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var10 string
-			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(data.Message)
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("\" hx-target=\"#poll\" hx-swap=\"outerHTML\"><p class=\"uk-muted\">")
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `login.templ`, Line: 53, Col: 34}
+				return templ_7745c5c3_Err
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
+			var templ_7745c5c3_Var12 string
+			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(data.Message)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `login.templ`, Line: 59, Col: 37}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -208,16 +258,16 @@ func LoginPoll(data PollData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<div id=\"poll\"><p class=\"muted\">")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<div id=\"poll\"><p class=\"uk-muted\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var11 string
-			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(data.Message)
+			var templ_7745c5c3_Var13 string
+			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(data.Message)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `login.templ`, Line: 57, Col: 34}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `login.templ`, Line: 63, Col: 37}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

@@ -1,5 +1,7 @@
 package views
 
+import "github.com/Domene99/drun-dash/internal/uikit"
+
 // Login renders the device-authorization sign-in page. It shows the user code
 // the member confirms in the admin UI and a link to the verification page, then
 // embeds the approval poller (via [LoginPoll]) which watches for the member to
@@ -7,23 +9,27 @@ package views
 // flow could not be started it renders the error instead.
 templ Login(data LoginData) {
 	@Layout("Sign in", false) {
-		<section class="card">
-			<h1>Sign in</h1>
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       "Sign in",
+			Description: "Approve this device in the drun-dash admin UI to sign in.",
+		})
+		@uikit.Card(uikit.CardConfig{}) {
 			if data.Error != "" {
-				<p class="error" role="alert">{ data.Error }</p>
-				<p class="muted">Reload the page to try again.</p>
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger, Title: "Could not start sign-in"}) {
+					{ data.Error }
+				}
+				<p class="uk-muted">Reload the page to try again.</p>
 			} else {
-				<p class="muted">
-					Approve this device in the drun-dash admin UI to sign in. Confirm the
-					code below matches, then approve the request.
-				</p>
-				<p class="code">{ data.UserCode }</p>
+				<p class="uk-muted">Confirm the code below matches, then approve the request.</p>
+				<p class="mc-usercode">{ data.UserCode }</p>
 				if data.VerificationURIComplete != "" {
-					<p>
-						<a href={ templ.SafeURL(data.VerificationURIComplete) } target="_blank" rel="noopener">
-							Open the approval page
-						</a>
-					</p>
+					@uikit.ButtonLink(uikit.ButtonLinkConfig{
+						Variant: uikit.ButtonPrimary,
+						Href:    data.VerificationURIComplete,
+						Attrs:   templ.Attributes{"target": "_blank", "rel": "noopener"},
+					}) {
+						Open the approval page
+					}
 				} else if data.VerificationURI != "" {
 					<p>
 						Go to
@@ -33,7 +39,7 @@ templ Login(data LoginData) {
 				}
 				@LoginPoll(PollData{Pending: true, IntervalSeconds: data.IntervalSeconds, Message: "Waiting for approval…"})
 			}
-		</section>
+		}
 	}
 }
 
@@ -50,11 +56,11 @@ templ LoginPoll(data PollData) {
 			hx-target="#poll"
 			hx-swap="outerHTML"
 		>
-			<p class="muted">{ data.Message }</p>
+			<p class="uk-muted">{ data.Message }</p>
 		</div>
 	} else {
 		<div id="poll">
-			<p class="muted">{ data.Message }</p>
+			<p class="uk-muted">{ data.Message }</p>
 		</div>
 	}
 }
