@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/Domene99/drun-dash/internal/auth"
 	"github.com/Domene99/drun-dash/internal/oidc"
@@ -24,6 +25,22 @@ const (
 	testKID      = "test"
 	testTTL      = 15 * time.Minute
 )
+
+// init installs benign fakes for the member/org seams /auth/whoami enriches
+// from, mirroring authz_test.go's init for the resolver seam. Whoami now loads
+// the member and org for a member token, and the unit tests run without a
+// database, so an un-overridden seam would dereference the nil pool. The
+// defaults resolve the fixed member-1/org-1 principal the token helpers mint;
+// tests that need other data override the seams with setMemberDirectory /
+// setOrgByIDReader.
+func init() {
+	newMemberDirectory = func(store.Querier) memberDirectory {
+		return &fakeMemberDirectory{byID: map[string]store.Member{"member-1": testMember()}}
+	}
+	newOrgByIDReader = func(store.Querier) orgByIDReader {
+		return fakeOrgReader{byID: map[string]store.Organization{"org-1": testOrg()}}
+	}
+}
 
 // fakeOIDC is a stub oidc.Verifier: it returns a fixed identity (or error)
 // regardless of the raw token, so the exchange handler can be tested without
@@ -45,6 +62,33 @@ type fakeMembers struct {
 
 func (f fakeMembers) GetByIDPSubject(context.Context, string, string) (store.Member, error) {
 	return f.member, f.err
+}
+
+// fakeOrgReader is a stub orgByIDReader returning a fixed org (or error) so
+// /auth/whoami's org lookup can be exercised without a database.
+type fakeOrgReader struct {
+	byID map[string]store.Organization
+	err  error
+}
+
+func (f fakeOrgReader) GetByID(_ context.Context, id string) (store.Organization, error) {
+	if f.err != nil {
+		return store.Organization{}, f.err
+	}
+	if o, ok := f.byID[id]; ok {
+		return o, nil
+	}
+	return store.Organization{}, store.ErrNotFound
+}
+
+// setOrgByIDReader points the newOrgByIDReader seam at r for the duration of
+// the test, restoring the previous factory afterwards. Because it mutates a
+// package-level var, callers must not run in parallel.
+func setOrgByIDReader(t *testing.T, r orgByIDReader) {
+	t.Helper()
+	orig := newOrgByIDReader
+	newOrgByIDReader = func(store.Querier) orgByIDReader { return r }
+	t.Cleanup(func() { newOrgByIDReader = orig })
 }
 
 // noRevoker is an auth.Revoker that never revokes; NewVerifier requires a
@@ -101,6 +145,14 @@ func testMember() store.Member {
 	}
 }
 
+func testOrg() store.Organization {
+	return store.Organization{
+		ID:   "org-1",
+		Slug: "acme",
+		Name: "Acme, Inc.",
+	}
+}
+
 func mountRouter(deps Deps) http.Handler {
 	r := chi.NewRouter()
 	Mount(r, deps)
@@ -128,7 +180,8 @@ func doJSON(t *testing.T, h http.Handler, method, path, body string, header http
 
 // TestSessionExchangeAndWhoami is the end-to-end proof of the auth vertical: a
 // valid OIDC token is exchanged for an access token, which then authenticates a
-// call to the protected /auth/whoami and returns the expected identity.
+// call to the protected /auth/whoami and returns the expected identity,
+// including the member and org resolved from the database.
 func TestSessionExchangeAndWhoami(t *testing.T) {
 	deps := testDeps(t,
 		fakeOIDC{token: &oidc.IDToken{Subject: "idp-sub-1", Email: "admin@example.com"}},
@@ -172,6 +225,144 @@ func TestSessionExchangeAndWhoami(t *testing.T) {
 	}
 	if len(id.Roles) != 1 || id.Roles[0] != "admin" {
 		t.Errorf("roles = %v, want [admin]", id.Roles)
+	}
+	// Member and org fields are resolved from the database (the whoami seams),
+	// not echoed from the token.
+	if id.Email != "admin@example.com" {
+		t.Errorf("email = %q, want admin@example.com", id.Email)
+	}
+	if id.OrgName != "Acme, Inc." {
+		t.Errorf("org_name = %q, want Acme, Inc.", id.OrgName)
+	}
+	if id.OrgSlug != "acme" {
+		t.Errorf("org_slug = %q, want acme", id.OrgSlug)
+	}
+}
+
+// TestWhoamiReturnsNameEmailAndOrg proves /auth/whoami resolves the signed-in
+// member's display name and email and the org's name and slug from the database
+// (the seams), so the admin UI can render the principal and tenant in plain text
+// instead of the synthetic subject and the org UUID.
+func TestWhoamiReturnsNameEmailAndOrg(t *testing.T) {
+	deps := testDeps(t, fakeOIDC{}, fakeMembers{})
+	name := "Ada Lovelace"
+	setMemberDirectory(t, &fakeMemberDirectory{byID: map[string]store.Member{
+		"member-1": {ID: "member-1", OrgID: "org-1", Email: "ada@acme.test", DisplayName: &name, Active: true},
+	}})
+	setOrgByIDReader(t, fakeOrgReader{byID: map[string]store.Organization{
+		"org-1": {ID: "org-1", Slug: "acme", Name: "Acme, Inc."},
+	}})
+	h := mountRouter(deps)
+	hdr := http.Header{"Authorization": {"Bearer " + agentToken(t, deps, "org-1")}}
+
+	rec := doJSON(t, h, http.MethodGet, "/auth/whoami", "", hdr)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var id identityResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &id); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if id.Name != "Ada Lovelace" {
+		t.Errorf("name = %q, want Ada Lovelace", id.Name)
+	}
+	if id.Email != "ada@acme.test" {
+		t.Errorf("email = %q, want ada@acme.test", id.Email)
+	}
+	if id.OrgName != "Acme, Inc." {
+		t.Errorf("org_name = %q, want Acme, Inc.", id.OrgName)
+	}
+	if id.OrgSlug != "acme" {
+		t.Errorf("org_slug = %q, want acme", id.OrgSlug)
+	}
+	// Subject and organization_id remain the token's raw values (back-compat).
+	if id.Subject != "idp-sub-1" {
+		t.Errorf("subject = %q, want idp-sub-1", id.Subject)
+	}
+	if id.OrganizationID != "org-1" {
+		t.Errorf("organization_id = %q, want org-1", id.OrganizationID)
+	}
+}
+
+// TestWhoamiMemberlessToken proves a roles-only token (no member id) still
+// returns 200 with the echoed subject/org and no member/org lookup: the seams
+// are wired to fail, yet the response is unaffected and carries empty
+// name/email/org and permissions.
+func TestWhoamiMemberlessToken(t *testing.T) {
+	deps := testDeps(t, fakeOIDC{}, fakeMembers{})
+	// If the handler mistakenly looked these up for a member-less token, the
+	// erroring seams would turn the response into a 500.
+	setMemberDirectory(t, &fakeMemberDirectory{})
+	setOrgByIDReader(t, fakeOrgReader{err: store.ErrNotFound})
+	h := mountRouter(deps)
+
+	tok, err := deps.Issuer.Mint(context.Background(), auth.Claims{
+		OrgID:            "org-1",
+		Roles:            []string{"admin"},
+		RegisteredClaims: jwt.RegisteredClaims{Subject: "roles-only"},
+	})
+	if err != nil {
+		t.Fatalf("mint token: %v", err)
+	}
+
+	rec := doJSON(t, h, http.MethodGet, "/auth/whoami", "",
+		http.Header{"Authorization": {"Bearer " + tok}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var id identityResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &id); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if id.Subject != "roles-only" {
+		t.Errorf("subject = %q, want roles-only", id.Subject)
+	}
+	if id.OrganizationID != "org-1" {
+		t.Errorf("organization_id = %q, want org-1", id.OrganizationID)
+	}
+	if id.Name != "" || id.Email != "" || id.OrgName != "" || id.OrgSlug != "" {
+		t.Errorf("member/org fields = %q/%q/%q/%q, want all empty", id.Name, id.Email, id.OrgName, id.OrgSlug)
+	}
+	if len(id.Permissions) != 0 {
+		t.Errorf("permissions = %v, want empty", id.Permissions)
+	}
+}
+
+// TestWhoamiLookupErrorIs500 proves a member or org lookup failure for a member
+// token is answered with a 500 (the generic internal-error body), matching the
+// permission-error posture; the response never discloses which lookup failed.
+func TestWhoamiLookupErrorIs500(t *testing.T) {
+	tests := []struct {
+		name string
+		set  func(t *testing.T)
+	}{
+		{
+			name: "member lookup fails",
+			set: func(t *testing.T) {
+				// Empty directory -> GetByID returns ErrNotFound for member-1.
+				setMemberDirectory(t, &fakeMemberDirectory{})
+			},
+		},
+		{
+			name: "org lookup fails",
+			set: func(t *testing.T) {
+				// Member resolves, but the org lookup errors.
+				setMemberDirectory(t, &fakeMemberDirectory{byID: map[string]store.Member{"member-1": testMember()}})
+				setOrgByIDReader(t, fakeOrgReader{err: store.ErrNotFound})
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := testDeps(t, fakeOIDC{}, fakeMembers{})
+			tc.set(t)
+			h := mountRouter(deps)
+			rec := doJSON(t, h, http.MethodGet, "/auth/whoami", "",
+				http.Header{"Authorization": {"Bearer " + agentToken(t, deps, "org-1")}})
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500 (body %s)", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 
