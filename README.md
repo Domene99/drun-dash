@@ -101,8 +101,17 @@ Startup order is enforced with healthchecks + `depends_on`: Postgres/Redis
 become healthy, `migrate` applies all migrations once and exits, then
 control-plane (`:8080`), llm-proxy (`:8081`), and admin-ui (`:8082`) come up.
 
-**Seed demo data** (one org, agents, policies, a budget, entitlements) — from
-the repo root, against the running Postgres:
+**Sign up your organization.** A fresh install starts **empty** — there is no
+demo org. Open the admin UI at <http://localhost:8082> and **sign up your
+organization**; the first account becomes the **Owner** (super-admin). From
+there you create agents and invite members. This is the normal path — no seed
+step is required to use the app.
+
+**Optional — seed demo data.** Want a ready-made demo org instead (environments,
+teams, members, endpoints, a policy, a budget, agents, and their RBAC role
+grants)? Load the **optional**, dev-only seed from the repo root against the
+running Postgres. It is idempotent — a shortcut for demos/tests, not a
+requirement:
 
 ```bash
 export DATABASE_URL='postgres://drundash:drundash@localhost:5432/drundash?sslmode=disable'
