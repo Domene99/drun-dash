@@ -39,6 +39,19 @@ var newPolicyStore = func(q store.Querier) policyStore {
 	return store.NewPolicyStore(q)
 }
 
+// policyRoleStore is the narrow slice of *[store.PolicyRoleStore] the
+// policy-roles handlers use (ADR-0010): read a policy's permitted roles and
+// replace them wholesale. It is the same package-level-var seam so tests inject
+// a fake without a database.
+type policyRoleStore interface {
+	ListRoles(ctx context.Context, policyID string) ([]string, error)
+	SetRoles(ctx context.Context, policyID string, roleIDs []string) error
+}
+
+var newPolicyRoleStore = func(q store.Querier) policyRoleStore {
+	return store.NewPolicyRoleStore(q)
+}
+
 // apiPolicyBoundary is the OpenAPI PolicyBoundary schema
 // (openapi/v1.yaml #/components/schemas/PolicyBoundary): the declarative
 // boundary an agent must stay within. It is free-form by design — the concrete
@@ -123,6 +136,16 @@ type apiPolicyVersionCreate struct {
 // policy's version history is bounded and returned whole.
 type apiPolicyVersionList struct {
 	Items []apiPolicyVersion `json:"items"`
+}
+
+// apiPolicyRoles is the OpenAPI PolicyRoles schema
+// (openapi/v1.yaml #/components/schemas/PolicyRoles): the set of role ids a
+// policy permits under the policy-centric access model (ADR-0010). It is both
+// the PUT request body and the GET/PUT response. role_ids is emitted without
+// omitempty and initialised to a non-nil slice so an empty permitted set
+// serialises as [] rather than null.
+type apiPolicyRoles struct {
+	RoleIDs []string `json:"role_ids"`
 }
 
 // toAPIPolicy maps a store.Policy to its API representation.
@@ -398,4 +421,99 @@ func (d Deps) publishPolicyVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteCreated(w, toAPIPolicyVersion(version))
+}
+
+// getPolicyRoles implements GET /policies/{policyId}/roles (operationId
+// getPolicyRoles). It confirms the policy belongs to the caller's org (a
+// cross-org or missing policy is a 404, never 403) and returns the ids of the
+// roles the policy permits under the policy-centric access model (ADR-0010).
+// The read is member-visible within the org; only the PUT is gated on
+// policies.manage.
+func (d Deps) getPolicyRoles(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	claims := authmw.MustPrincipal(ctx)
+	policyID := chi.URLParam(r, "policyId")
+
+	policy, err := newPolicyStore(d.Pool).GetByID(ctx, policyID)
+	if err != nil {
+		WriteStoreError(w, err)
+		return
+	}
+	if !SameOrg(claims.OrgID, policy.OrgID) {
+		WriteNotFound(w, "resource not found")
+		return
+	}
+
+	roleIDs, err := newPolicyRoleStore(d.Pool).ListRoles(ctx, policy.ID)
+	if err != nil {
+		WriteStoreError(w, err)
+		return
+	}
+	WriteOK(w, apiPolicyRoles{RoleIDs: nonNilStrings(roleIDs)})
+}
+
+// updatePolicyRoles implements PUT /policies/{policyId}/roles (operationId
+// updatePolicyRoles, permission policies.manage). It replaces the policy's
+// permitted-role set wholesale (ADR-0010). Every supplied role id must name a
+// role in the caller's org; an unknown or cross-org id is a 404 and nothing is
+// written. On success it returns the stored set. A cross-org or missing policy
+// is a 404.
+func (d Deps) updatePolicyRoles(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	claims := authmw.MustPrincipal(ctx)
+	policyID := chi.URLParam(r, "policyId")
+
+	var req apiPolicyRoles
+	if err := httpx.DecodeJSON(w, r, &req); err != nil {
+		_ = httpx.WriteError(w, http.StatusBadRequest, httpx.CodeBadRequest, err.Error())
+		return
+	}
+
+	policy, err := newPolicyStore(d.Pool).GetByID(ctx, policyID)
+	if err != nil {
+		WriteStoreError(w, err)
+		return
+	}
+	if !SameOrg(claims.OrgID, policy.OrgID) {
+		WriteNotFound(w, "resource not found")
+		return
+	}
+
+	// Every role must exist and belong to the caller's org before we write:
+	// validate up front so a bad id rejects the whole request rather than
+	// leaving a partial set. A missing or cross-org role is a 404 (matching the
+	// member-invite role check), never leaking another tenant's role ids.
+	roles := newRoleStore(d.Pool)
+	for _, roleID := range req.RoleIDs {
+		role, err := roles.GetByID(ctx, roleID)
+		if err != nil {
+			WriteStoreError(w, err)
+			return
+		}
+		if !SameOrg(claims.OrgID, role.OrgID) {
+			WriteNotFound(w, "resource not found")
+			return
+		}
+	}
+
+	prs := newPolicyRoleStore(d.Pool)
+	if err := prs.SetRoles(ctx, policy.ID, req.RoleIDs); err != nil {
+		WriteStoreError(w, err)
+		return
+	}
+	stored, err := prs.ListRoles(ctx, policy.ID)
+	if err != nil {
+		WriteStoreError(w, err)
+		return
+	}
+	WriteOK(w, apiPolicyRoles{RoleIDs: nonNilStrings(stored)})
+}
+
+// nonNilStrings returns s unchanged when non-nil, or an empty (non-nil) slice
+// so a JSON array field serialises as [] rather than null.
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }

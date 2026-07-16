@@ -137,66 +137,20 @@ func TestDedupeGrants(t *testing.T) {
 	}
 }
 
-func TestSamePtr(t *testing.T) {
-	x, y := "x", "x"
-	z := "z"
-	cases := []struct {
-		a, b *string
-		want bool
-	}{
-		{nil, nil, true},
-		{&x, &y, true},
-		{&x, &z, false},
-		{&x, nil, false},
-		{nil, &x, false},
+func TestDedupeStrings(t *testing.T) {
+	got := dedupeStrings([]string{"r1", "r2", "r1", "r3", "r2"})
+	want := []string{"r1", "r2", "r3"}
+	if len(got) != len(want) {
+		t.Fatalf("dedupeStrings = %v, want %v", got, want)
 	}
-	for i, c := range cases {
-		if got := samePtr(c.a, c.b); got != c.want {
-			t.Errorf("case %d: samePtr = %v, want %v", i, got, c.want)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("dedupeStrings = %v, want %v (first-appearance order)", got, want)
 		}
 	}
-}
-
-func TestResolveRunGrant(t *testing.T) {
-	pv := func(s string) *string { return &s }
-	fan := func(n int) *int { return &n }
-
-	t.Run("max fan-out wins across bounded grants", func(t *testing.T) {
-		g := resolveRunGrant([]RoleAgent{{MaxFanOut: fan(2)}, {MaxFanOut: fan(7)}, {MaxFanOut: fan(4)}})
-		if g.MaxFanOut == nil || *g.MaxFanOut != 7 {
-			t.Fatalf("MaxFanOut = %v, want 7", g.MaxFanOut)
-		}
-	})
-	t.Run("nil fan-out is unbounded and wins", func(t *testing.T) {
-		g := resolveRunGrant([]RoleAgent{{MaxFanOut: fan(2)}, {MaxFanOut: nil}})
-		if g.MaxFanOut != nil {
-			t.Fatalf("MaxFanOut = %v, want nil (unbounded)", *g.MaxFanOut)
-		}
-	})
-	t.Run("agreeing policy override applies", func(t *testing.T) {
-		g := resolveRunGrant([]RoleAgent{{PolicyVersionID: pv("p1")}, {PolicyVersionID: pv("p1")}})
-		if g.PolicyVersionID == nil || *g.PolicyVersionID != "p1" {
-			t.Fatalf("PolicyVersionID = %v, want p1", g.PolicyVersionID)
-		}
-	})
-	t.Run("disagreeing policy override is dropped", func(t *testing.T) {
-		g := resolveRunGrant([]RoleAgent{{PolicyVersionID: pv("p1")}, {PolicyVersionID: pv("p2")}})
-		if g.PolicyVersionID != nil {
-			t.Fatalf("PolicyVersionID = %v, want nil", *g.PolicyVersionID)
-		}
-	})
-	t.Run("mixed set and unset override is dropped", func(t *testing.T) {
-		g := resolveRunGrant([]RoleAgent{{PolicyVersionID: pv("p1")}, {PolicyVersionID: nil}})
-		if g.PolicyVersionID != nil {
-			t.Fatalf("PolicyVersionID = %v, want nil", *g.PolicyVersionID)
-		}
-	})
-	t.Run("single grant carries its tuning", func(t *testing.T) {
-		g := resolveRunGrant([]RoleAgent{{PolicyVersionID: pv("p9"), MaxFanOut: fan(3)}})
-		if g.PolicyVersionID == nil || *g.PolicyVersionID != "p9" || g.MaxFanOut == nil || *g.MaxFanOut != 3 {
-			t.Fatalf("single grant tuning = %+v", g)
-		}
-	})
+	if dedupeStrings(nil) != nil {
+		t.Fatal("dedupeStrings(nil) != nil")
+	}
 }
 
 func hasPerm(perms []Permission, p Permission) bool {

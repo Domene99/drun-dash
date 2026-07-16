@@ -602,6 +602,59 @@ paths:
         '501':
           $ref: '#/components/responses/NotImplemented'
 
+  /policies/{policyId}/roles:
+    parameters:
+      - $ref: '#/components/parameters/PolicyId'
+    get:
+      tags: [Policies]
+      operationId: getPolicyRoles
+      summary: Get a policy's permitted roles
+      description: >-
+        List the ids of the roles the policy permits under the policy-centric
+        access model. An agent governed by this policy is accessible to a member
+        holding agents.run when one of their roles is in this set. Visible to any
+        authenticated member in the org.
+      responses:
+        '200':
+          description: The policy's permitted role ids.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyRoles'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    put:
+      tags: [Policies]
+      operationId: updatePolicyRoles
+      summary: Replace a policy's permitted roles
+      description: >-
+        Replace the set of roles the policy permits (policy-centric access
+        model). Every role id must name a role in the caller's org; an unknown or
+        cross-org role is a 404. Requires policies.manage.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyRoles'
+      responses:
+        '200':
+          description: The policy's updated permitted role ids.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyRoles'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
   # ------------------------------------------------------------- Sessions ---
   /sessions:
     get:
@@ -2256,6 +2309,19 @@ components:
           type: integer
           minimum: 0
           description: Optional per-grant fan-out ceiling override.
+
+    PolicyRoles:
+      type: object
+      required: [role_ids]
+      properties:
+        role_ids:
+          type: array
+          description: >-
+            The full set of role ids the policy permits (policy-centric access
+            model). An agent governed by the policy is accessible to a member
+            holding agents.run when one of their roles is in this set.
+          items:
+            $ref: '#/components/schemas/Id'
 
     Role:
       type: object

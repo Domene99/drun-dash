@@ -147,9 +147,10 @@ func Mount(r chi.Router, deps Deps) {
 		// browser session established by OIDC login. Not in openapi/v1.yaml.
 		pr.Post("/auth/device/approve", deps.approveDevice)
 
-		// GET /me/agents returns only the caller's entitled agents (the member
-		// console surface), distinct from GET /agents (all org agents). A
-		// documented contract extension, not in openapi/v1.yaml.
+		// GET /me/agents returns only the agents the caller may access (the
+		// member console surface), resolved by the policy-centric access model
+		// (ADR-0010), distinct from GET /agents (all org agents). A documented
+		// contract extension, not in openapi/v1.yaml.
 		pr.Get("/me/agents", deps.listMyAgents)
 
 		// Agents. Reads are member-visible within the org; mutations require
@@ -166,12 +167,16 @@ func Mount(r chi.Router, deps Deps) {
 		pr.Get("/agents/{agentId}/entitlements", deps.listAgentEntitlements)
 		pr.With(deps.requirePermission(store.PermRolesManage)).Put("/agents/{agentId}/entitlements", deps.setAgentEntitlements)
 
-		// Policies. Reads member-visible; create/publish require policies.manage.
+		// Policies. Reads member-visible; create/publish and the policy-roles
+		// PUT require policies.manage. GET /policies/{id}/roles is member-visible
+		// like the other policy reads (ADR-0010).
 		pr.Get("/policies", deps.listPolicies)
 		pr.With(deps.requirePermission(store.PermPoliciesManage)).Post("/policies", deps.createPolicy)
 		pr.Get("/policies/{policyId}", deps.getPolicy)
 		pr.Get("/policies/{policyId}/versions", deps.listPolicyVersions)
 		pr.With(deps.requirePermission(store.PermPoliciesManage)).Post("/policies/{policyId}/versions", deps.publishPolicyVersion)
+		pr.Get("/policies/{policyId}/roles", deps.getPolicyRoles)
+		pr.With(deps.requirePermission(store.PermPoliciesManage)).Put("/policies/{policyId}/roles", deps.updatePolicyRoles)
 
 		// Roles and members (ADR-0006 §7). Defining a role is roles.manage;
 		// assigning roles to a member and inviting members is members.manage;
