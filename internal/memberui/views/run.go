@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/a-h/templ"
+
+	"github.com/Domene99/drun-dash/internal/uikit"
 )
 
 // This file holds the conversational run view (ADR-0004 §3–§5) — the chat-first
@@ -19,13 +21,6 @@ import (
 // small member conversation classes (mc-*, see styles.go) so it renders with the
 // same tokens as the admin audit view. It composes with the generated [Layout]
 // exactly as the generated views do.
-
-// sseExtensionURL is the htmx Server-Sent Events extension, pulled in only on the
-// run page (the login/home pages do not stream). It drives the live turn
-// transcript: the assistant bubble subscribes to the run's SSE stream and
-// appends each rendered step. Pinned for reproducibility, matching the core htmx
-// pin uikit.Head links.
-const sseExtensionURL = "https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.2/dist/sse.min.js"
 
 // RunData is the view model for the run view: the launched session's non-secret
 // facts (never the proxy token), the resolved model, and the bound drun engine's
@@ -87,7 +82,11 @@ func runTitle(data RunData) string {
 func renderRunBody(w io.Writer, data RunData) error {
 	var b strings.Builder
 
-	b.WriteString(`<script src="` + sseExtensionURL + `" defer></script>`)
+	// The htmx SSE extension is pulled in only on the run page (login/home do
+	// not stream); it drives the live turn transcript. Served locally by
+	// uikit.Handler() so the governed app never depends on a CDN — matching the
+	// core htmx that uikit.Head links.
+	b.WriteString(`<script src="` + uikit.SSEExtensionURL() + `" defer></script>`)
 
 	// Page header: agent name as the readable title, with a back link.
 	b.WriteString(`<div class="uk-page-header">`)

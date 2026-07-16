@@ -15,8 +15,8 @@ package uikit
 const themeInitScript = "(function(){try{var t=localStorage.getItem('uikit-theme');if(t==='dark'||t==='light'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();"
 
 // Head renders the document <head>: metadata, the initial-theme script, the
-// content-hashed stylesheet, HTMX, and the deferred theme script. Compose it
-// into a page with [Shell].
+// content-hashed stylesheet, the vendored HTMX runtime, and the deferred theme
+// script. Compose it into a page with [Shell].
 templ Head(cfg HeadConfig) {
 	<head>
 		<meta charset="utf-8"/>
@@ -25,7 +25,7 @@ templ Head(cfg HeadConfig) {
 		<title>{ stringOr(cfg.Title, "drun-dash") } · drun-dash</title>
 		@templ.Raw("<script>" + themeInitScript + "</script>")
 		<link rel="stylesheet" href={ StylesheetURL() }/>
-		<script src={ htmxScriptURL } defer></script>
+		<script src={ CoreScriptURL() } defer></script>
 		<script src={ ScriptURL() } defer></script>
 		if cfg.Extra != nil {
 			@cfg.Extra

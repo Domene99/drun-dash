@@ -78,6 +78,54 @@ func TestAssetURLsCarryContentHash(t *testing.T) {
 	if !strings.HasPrefix(ScriptURL(), ScriptPath+"?v=") {
 		t.Errorf("ScriptURL = %q, want %s?v=<hash>", ScriptURL(), ScriptPath)
 	}
+	if !strings.HasPrefix(CoreScriptURL(), CoreScriptPath+"?v=") {
+		t.Errorf("CoreScriptURL = %q, want %s?v=<hash>", CoreScriptURL(), CoreScriptPath)
+	}
+	if !strings.HasPrefix(SSEExtensionURL(), SSEExtensionPath+"?v=") {
+		t.Errorf("SSEExtensionURL = %q, want %s?v=<hash>", SSEExtensionURL(), SSEExtensionPath)
+	}
+}
+
+// TestHandlerServesVendoredHTMX proves the governed desktop app depends on no
+// CDN: the HTMX runtime and its SSE extension are embedded and served locally,
+// content-hashed and immutably cacheable like the other assets.
+func TestHandlerServesVendoredHTMX(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		url  string
+		want string // a marker the real vendored file contains
+	}{
+		{"htmx core v2.0.4", CoreScriptURL(), "htmx"},
+		{"htmx-ext-sse v2.2.2", SSEExtensionURL(), "defineExtension('sse'"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+		rec := httptest.NewRecorder()
+		Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", tc.name, rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+			t.Errorf("%s: Content-Type = %q, want text/javascript", tc.name, ct)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, tc.want) {
+			t.Errorf("%s: served asset missing marker %q (wrong file vendored?)", tc.name, tc.want)
+		}
+		if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "immutable") {
+			t.Errorf("%s: Cache-Control = %q, want immutable", tc.name, cc)
+		}
+	}
+}
+
+// TestHeadLinksVendoredHTMXNotCDN guards the no-CDN rule at the head: HTMX core
+// is linked from the local content-hashed path, never from a third-party origin.
+func TestHeadLinksVendoredHTMXNotCDN(t *testing.T) {
+	out := render(t, Head(HeadConfig{Title: "Chat"}))
+	if !strings.Contains(out, CoreScriptPath) {
+		t.Errorf("head should link the local HTMX runtime %q: %s", CoreScriptPath, out)
+	}
+	if strings.Contains(out, "jsdelivr") || strings.Contains(out, "cdn.") || strings.Contains(out, "//unpkg") {
+		t.Errorf("head must not link HTMX from a CDN: %s", out)
+	}
 }
 
 func TestStatusVariant(t *testing.T) {

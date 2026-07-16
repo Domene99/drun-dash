@@ -16,6 +16,9 @@
 //     app at a stable, content-hashed path via [Handler].
 //   - A minimal vanilla theme-toggle script (assets/theme-toggle.js), embedded
 //     and linked by the [Head] component.
+//   - The vendored HTMX runtime (assets/htmx.js) and its Server-Sent Events
+//     extension (assets/htmx-ext-sse.js), embedded and served locally so the
+//     governed desktop app never contacts a CDN (offline / air-gapped installs).
 //   - A templ component library (see components.templ): [Shell], [Sidebar],
 //     [TopBar], [PageHeader], [Card], [Table], [Badge], [Button], form
 //     controls, [EmptyState], [Alert], [Modal], [IDChip], [RelativeTime], …
@@ -42,36 +45,44 @@ import (
 	"strings"
 )
 
-// assetsFS holds the embedded stylesheet and theme script. The files under
-// assets/ are the design system's runtime payload; everything else in the
-// package renders markup that points at them.
+// assetsFS holds the embedded stylesheet, theme script, and the vendored HTMX
+// runtime + SSE extension. The files under assets/ are the design system's
+// runtime payload; everything else in the package renders markup that points at
+// them. HTMX is vendored (not CDN-loaded) so the governed desktop app runs
+// fully offline / air-gapped — no third-party origin is ever contacted.
 //
-//go:embed assets/uikit.css assets/theme-toggle.js
+//go:embed assets/uikit.css assets/theme-toggle.js assets/htmx.js assets/htmx-ext-sse.js
 var assetsFS embed.FS
 
 // Asset filenames within the embedded assets/ directory.
 const (
 	stylesheetName = "uikit.css"
 	scriptName     = "theme-toggle.js"
+	// coreScriptName is the vendored HTMX core runtime (v2.0.4); sseExtName is
+	// the vendored HTMX Server-Sent Events extension (v2.2.2), pulled in only on
+	// the member run page. Both are HTMX 2.x and compatible.
+	coreScriptName = "htmx.js"
+	sseExtName     = "htmx-ext-sse.js"
 )
+
+// assetNames lists every embedded asset filename [Handler] serves and for which
+// a content hash is computed. Keep it in sync with the //go:embed directive.
+var assetNames = []string{stylesheetName, scriptName, coreScriptName, sseExtName}
 
 // MountPrefix is the URL prefix each app mounts [Handler] under. The stylesheet
 // and theme script are served beneath it (see [StylesheetPath], [ScriptPath]).
 const MountPrefix = "/uikit/"
 
-// StylesheetPath and ScriptPath are the canonical request paths for the two
-// embedded assets, served by [Handler]. Use [StylesheetURL] / [ScriptURL] when
-// linking them from a page so the URL carries a content hash for cache-busting.
+// StylesheetPath, ScriptPath, CoreScriptPath, and SSEExtensionPath are the
+// canonical request paths for the embedded assets, served by [Handler]. Use the
+// matching *URL helpers when linking them from a page so the URL carries a
+// content hash for cache-busting.
 const (
-	StylesheetPath = MountPrefix + stylesheetName
-	ScriptPath     = MountPrefix + scriptName
+	StylesheetPath   = MountPrefix + stylesheetName
+	ScriptPath       = MountPrefix + scriptName
+	CoreScriptPath   = MountPrefix + coreScriptName
+	SSEExtensionPath = MountPrefix + sseExtName
 )
-
-// htmxScriptURL is the pinned HTMX runtime linked by [Head]. Both apps drive
-// their interactivity with HTMX (ADR-0005 locks "HTMX only, no JS framework"),
-// so the design system links one pinned version for consistency. Swap for a
-// vendored asset if serving from a CDN is undesirable in your deployment.
-const htmxScriptURL = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"
 
 // contentHashes maps an asset filename to a short hex content hash, computed
 // once at init from the embedded bytes. The hash is appended as a ?v= query so
@@ -79,8 +90,8 @@ const htmxScriptURL = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min
 var contentHashes = buildContentHashes()
 
 func buildContentHashes() map[string]string {
-	hashes := make(map[string]string, 2)
-	for _, name := range []string{stylesheetName, scriptName} {
+	hashes := make(map[string]string, len(assetNames))
+	for _, name := range assetNames {
 		b, err := assetsFS.ReadFile("assets/" + name)
 		if err != nil {
 			// Embedded files are compiled in; a miss is a build-time bug.
@@ -99,6 +110,15 @@ func StylesheetURL() string { return StylesheetPath + "?v=" + contentHashes[styl
 // ScriptURL returns the cache-busting URL for the theme script.
 func ScriptURL() string { return ScriptPath + "?v=" + contentHashes[scriptName] }
 
+// CoreScriptURL returns the cache-busting URL for the vendored HTMX runtime.
+// [Head] links it, so both apps load HTMX from this origin — never a CDN.
+func CoreScriptURL() string { return CoreScriptPath + "?v=" + contentHashes[coreScriptName] }
+
+// SSEExtensionURL returns the cache-busting URL for the vendored HTMX
+// Server-Sent Events extension. The member run page links it to drive its live
+// turn transcript; loading it locally keeps the governed app CDN-free.
+func SSEExtensionURL() string { return SSEExtensionPath + "?v=" + contentHashes[sseExtName] }
+
 // Handler serves the embedded assets under [MountPrefix]. Mount it with:
 //
 //	mux.Handle(uikit.MountPrefix, uikit.Handler())
@@ -114,7 +134,7 @@ func Handler() http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(r.URL.Path, MountPrefix)
-		if name != stylesheetName && name != scriptName {
+		if !isAssetName(name) {
 			http.NotFound(w, r)
 			return
 		}
@@ -123,10 +143,9 @@ func Handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		switch name {
-		case stylesheetName:
+		if name == stylesheetName {
 			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		case scriptName:
+		} else {
 			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		}
 		if r.URL.RawQuery != "" {
@@ -137,4 +156,14 @@ func Handler() http.Handler {
 		//nolint:errcheck // best-effort write to the response body
 		w.Write(b)
 	})
+}
+
+// isAssetName reports whether name is one of the embedded assets Handler serves.
+func isAssetName(name string) bool {
+	for _, n := range assetNames {
+		if name == n {
+			return true
+		}
+	}
+	return false
 }
