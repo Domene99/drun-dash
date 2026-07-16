@@ -39,16 +39,19 @@ templ Minimal(title string) {
 }
 
 // userMenu renders the top-bar profile menu: a disclosure whose summary is a
-// ghost button and whose panel is a card carrying the signed-in identity
-// ("who am I" — email, roles, and the subject/organization UUIDs as copyable ID
-// chips, per ADR-0005 §4) plus the sign-out action. The claims dump that used
-// to be the landing page lives here now.
+// ghost button and whose panel is a card carrying the signed-in identity. The
+// visible identity is plain text — the member's name and email ("Name — email")
+// and the organization NAME (ADR-0005 §4) — never the raw "local:<uuid>" subject
+// or org UUID as a primary label. Those raw ids stay only as subtle, copyable ID
+// chips (and the subject as the summary's hover title) for developer support,
+// alongside the sign-out action.
 templ userMenu(id IdentityView) {
 	<details class="uk-user-menu">
-		<summary class="uk-btn uk-btn--ghost">{ userMenuLabel(id) }</summary>
+		<summary class="uk-btn uk-btn--ghost" title={ id.Subject }>{ userMenuLabel(id) }</summary>
 		@uikit.Card(uikit.CardConfig{Title: "Signed in"}) {
-			if id.Email != "" {
-				<p>{ id.Email }</p>
+			<p>{ identityPrimary(id) }</p>
+			if id.OrgName != "" {
+				<p class="uk-muted">{ id.OrgName }</p>
 			}
 			<p class="uk-muted">Roles: { orDash(id.Roles) }</p>
 			if id.Subject != "" {
@@ -66,11 +69,32 @@ templ userMenu(id IdentityView) {
 	</details>
 }
 
-// userMenuLabel is the collapsed user-menu label: the member's email when
-// known, otherwise a neutral "Account".
+// userMenuLabel is the collapsed user-menu label: the member's name, else their
+// email, else a neutral "Account" — never the raw subject UUID.
 func userMenuLabel(id IdentityView) string {
-	if id.Email != "" {
+	switch {
+	case id.Name != "":
+		return id.Name
+	case id.Email != "":
 		return id.Email
+	default:
+		return "Account"
 	}
-	return "Account"
+}
+
+// identityPrimary is the primary identity line in the user menu: the member's
+// name and email ("Name — email") when both are known, otherwise whichever is
+// present (the email alone if there is no name), so the visible identity reads as
+// a person — never a "local:<uuid>" subject.
+func identityPrimary(id IdentityView) string {
+	switch {
+	case id.Name != "" && id.Email != "":
+		return id.Name + " — " + id.Email
+	case id.Name != "":
+		return id.Name
+	case id.Email != "":
+		return id.Email
+	default:
+		return "Account"
+	}
 }

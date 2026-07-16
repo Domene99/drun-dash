@@ -129,10 +129,12 @@ func Minimal(title string) templ.Component {
 }
 
 // userMenu renders the top-bar profile menu: a disclosure whose summary is a
-// ghost button and whose panel is a card carrying the signed-in identity
-// ("who am I" — email, roles, and the subject/organization UUIDs as copyable ID
-// chips, per ADR-0005 §4) plus the sign-out action. The claims dump that used
-// to be the landing page lives here now.
+// ghost button and whose panel is a card carrying the signed-in identity. The
+// visible identity is plain text — the member's name and email ("Name — email")
+// and the organization NAME (ADR-0005 §4) — never the raw "local:<uuid>" subject
+// or org UUID as a primary label. Those raw ids stay only as subtle, copyable ID
+// chips (and the subject as the summary's hover title) for developer support,
+// alongside the sign-out action.
 func userMenu(id IdentityView) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -154,16 +156,29 @@ func userMenu(id IdentityView) templ.Component {
 			templ_7745c5c3_Var5 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<details class=\"uk-user-menu\"><summary class=\"uk-btn uk-btn--ghost\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<details class=\"uk-user-menu\"><summary class=\"uk-btn uk-btn--ghost\" title=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var6 string
-		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(userMenuLabel(id))
+		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(id.Subject)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/views/layout.templ`, Line: 48, Col: 59}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/views/layout.templ`, Line: 50, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var7 string
+		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(userMenuLabel(id))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/views/layout.templ`, Line: 50, Col: 80}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -171,7 +186,7 @@ func userMenu(id IdentityView) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Var7 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_Var8 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 			templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 			templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 			if !templ_7745c5c3_IsBuffer {
@@ -183,17 +198,34 @@ func userMenu(id IdentityView) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			if id.Email != "" {
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<p>")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<p>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var9 string
+			templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(identityPrimary(id))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/views/layout.templ`, Line: 52, Col: 27}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("</p>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			if id.OrgName != "" {
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString("<p class=\"uk-muted\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var8 string
-				templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(id.Email)
+				var templ_7745c5c3_Var10 string
+				templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(id.OrgName)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/views/layout.templ`, Line: 51, Col: 17}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/views/layout.templ`, Line: 54, Col: 36}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -206,12 +238,12 @@ func userMenu(id IdentityView) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var9 string
-			templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(orDash(id.Roles))
+			var templ_7745c5c3_Var11 string
+			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(orDash(id.Roles))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/views/layout.templ`, Line: 53, Col: 48}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/views/layout.templ`, Line: 56, Col: 48}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -255,7 +287,7 @@ func userMenu(id IdentityView) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Var10 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_Var12 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 				if !templ_7745c5c3_IsBuffer {
@@ -273,7 +305,7 @@ func userMenu(id IdentityView) templ.Component {
 				}
 				return templ_7745c5c3_Err
 			})
-			templ_7745c5c3_Err = uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Type: "submit"}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var10), templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Type: "submit"}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var12), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -283,7 +315,7 @@ func userMenu(id IdentityView) templ.Component {
 			}
 			return templ_7745c5c3_Err
 		})
-		templ_7745c5c3_Err = uikit.Card(uikit.CardConfig{Title: "Signed in"}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var7), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = uikit.Card(uikit.CardConfig{Title: "Signed in"}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var8), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -295,13 +327,34 @@ func userMenu(id IdentityView) templ.Component {
 	})
 }
 
-// userMenuLabel is the collapsed user-menu label: the member's email when
-// known, otherwise a neutral "Account".
+// userMenuLabel is the collapsed user-menu label: the member's name, else their
+// email, else a neutral "Account" — never the raw subject UUID.
 func userMenuLabel(id IdentityView) string {
-	if id.Email != "" {
+	switch {
+	case id.Name != "":
+		return id.Name
+	case id.Email != "":
 		return id.Email
+	default:
+		return "Account"
 	}
-	return "Account"
+}
+
+// identityPrimary is the primary identity line in the user menu: the member's
+// name and email ("Name — email") when both are known, otherwise whichever is
+// present (the email alone if there is no name), so the visible identity reads as
+// a person — never a "local:<uuid>" subject.
+func identityPrimary(id IdentityView) string {
+	switch {
+	case id.Name != "" && id.Email != "":
+		return id.Name + " — " + id.Email
+	case id.Name != "":
+		return id.Name
+	case id.Email != "":
+		return id.Email
+	default:
+		return "Account"
+	}
 }
 
 var _ = templruntime.GeneratedTemplate

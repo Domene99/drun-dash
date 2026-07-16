@@ -252,20 +252,6 @@ func TestMemberRolesPostsDesiredSet(t *testing.T) {
 	}
 }
 
-func TestTeamsPageIsReadOnlyNotice(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /auth/whoami", whoamiHandler("members.manage"))
-	s := newServerCP(t, mux)
-
-	rec := authedGet(t, s, "/teams")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "Team management") || !strings.Contains(rec.Body.String(), "available yet") {
-		t.Errorf("teams page should show the read-only notice")
-	}
-}
-
 func TestAgentsListLinksToDetail(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /auth/whoami", whoamiHandler())
@@ -379,12 +365,141 @@ func TestPoliciesListLinksToDetail(t *testing.T) {
 
 func TestGovernancePagesRedirectUnauthenticated(t *testing.T) {
 	s := newServer(t, "http://control-plane.invalid")
-	for _, path := range []string{"/roles", "/members", "/teams", "/agents", "/agents/a1", "/policies", "/policies/p1"} {
+	for _, path := range []string{"/roles", "/members", "/agents", "/agents/a1", "/policies", "/policies/p1"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, req)
 		if loc := rec.Header().Get("Location"); loc != "/login" {
 			t.Errorf("%s Location = %q, want /login", path, loc)
 		}
+	}
+}
+
+// TestPolicyCreateSetsPermittedRoles asserts that creating a policy with roles
+// selected posts them to PUT /policies/{id}/roles using the id the create
+// returned (policy-centric access, ADR-0010).
+func TestPolicyCreateSetsPermittedRoles(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /auth/whoami", whoamiHandler("policies.manage"))
+	mux.HandleFunc("POST /policies", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"p9","name":"Read-only","current_version":1,"created_at":"2026-07-01T00:00:00Z"}`))
+	})
+	mux.HandleFunc("PUT /policies/{policyId}/roles", func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotBody, _ = io.ReadAll(r.Body)
+	})
+	s := newServerCP(t, mux)
+
+	form := url.Values{}
+	form.Set("name", "Read-only")
+	form.Add("permitted_roles", "r-deploy")
+	form.Add("permitted_roles", "r-owner")
+	rec := authedPostForm(t, s, "/policies", form)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
+	}
+	if gotPath != "/policies/p9/roles" {
+		t.Errorf("permitted-roles PUT path = %q, want /policies/p9/roles", gotPath)
+	}
+	var got struct {
+		RoleIDs []string `json:"role_ids"`
+	}
+	if err := json.Unmarshal(gotBody, &got); err != nil {
+		t.Fatalf("decode body: %v (%s)", err, gotBody)
+	}
+	if len(got.RoleIDs) != 2 {
+		t.Errorf("role_ids = %v, want two", got.RoleIDs)
+	}
+}
+
+// TestPolicyDetailShowsAndEditsPermittedRoles asserts the policy detail page
+// resolves permitted-role ids to names, offers the Edit affordance for a
+// policies.manage caller, and notes that boundary changes go through policyctl.
+func TestPolicyDetailShowsAndEditsPermittedRoles(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /auth/whoami", whoamiHandler("policies.manage", "roles.manage"))
+	mux.HandleFunc("GET /policies/{policyId}", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"p1","name":"Production","current_version":1,"created_at":"2026-07-01T00:00:00Z"}`))
+	})
+	mux.HandleFunc("GET /policies/{policyId}/versions", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	})
+	mux.HandleFunc("GET /policies/{policyId}/roles", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"role_ids":["r-deploy"]}`))
+	})
+	mux.HandleFunc("GET /roles", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, rolesJSON())
+	})
+	s := newServerCP(t, mux)
+
+	rec := authedGet(t, s, "/policies/p1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Permitted roles", "Deployer", // permitted role id resolved to its name
+		"Edit permitted roles", `data-uk-modal-open="policy-roles-p1"`, // gated edit
+		"policyctl", // the boundary-changes note
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("policy detail missing %q", want)
+		}
+	}
+}
+
+// TestPolicyDetailPermittedRolesReadOnlyWithoutManage asserts a caller lacking
+// policies.manage sees the permitted roles but not the Edit affordance.
+func TestPolicyDetailPermittedRolesReadOnlyWithoutManage(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /auth/whoami", whoamiHandler("audit.view"))
+	mux.HandleFunc("GET /policies/{policyId}", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"p1","name":"Production","current_version":1,"created_at":"2026-07-01T00:00:00Z"}`))
+	})
+	mux.HandleFunc("GET /policies/{policyId}/versions", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	})
+	mux.HandleFunc("GET /policies/{policyId}/roles", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"role_ids":[]}`))
+	})
+	s := newServerCP(t, mux)
+
+	rec := authedGet(t, s, "/policies/p1")
+	body := rec.Body.String()
+	if !strings.Contains(body, "Permitted roles") {
+		t.Errorf("read-only viewer should still see the permitted-roles section")
+	}
+	if strings.Contains(body, "Edit permitted roles") {
+		t.Errorf("edit affordance must be hidden without policies.manage")
+	}
+}
+
+// TestIdentityShowsNameEmailOrgPlainText asserts the top bar renders the signed-in
+// user's name/email and org name in plain text (never a local:<uuid> subject as
+// the primary label), sourced from the enriched whoami.
+func TestIdentityShowsNameEmailOrgPlainText(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /auth/whoami", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"subject":"local:5f3a","organization_id":"org-9","name":"Ada Lovelace","email":"ada@example.com","org_name":"Acme Inc","org_slug":"acme","roles":["admin"],"permissions":[]}`))
+	})
+	mux.HandleFunc("GET /policies", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	})
+	s := newServerCP(t, mux)
+
+	rec := authedGet(t, s, "/policies")
+	body := rec.Body.String()
+	for _, want := range []string{"Ada Lovelace \u2014 ada@example.com", "Acme Inc"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("identity display missing %q", want)
+		}
+	}
+	// The raw local:<uuid> subject must not be the visible collapsed label.
+	if strings.Contains(body, `>local:5f3a</summary>`) {
+		t.Errorf("raw subject must not be the primary user-menu label")
 	}
 }

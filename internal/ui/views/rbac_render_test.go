@@ -64,11 +64,6 @@ func TestRenderMembersBadgesAndGating(t *testing.T) {
 	}
 }
 
-func TestRenderTeamsReadOnlyNotice(t *testing.T) {
-	body := render(t, Teams(TeamsData{Chrome: sampleChrome("teams"), Available: false}))
-	mustContain(t, body, "Teams", "Team management", "available yet")
-}
-
 func TestRenderAgentDetailReadOnly(t *testing.T) {
 	body := render(t, AgentDetail(AgentDetailData{
 		Chrome: sampleChrome("agents"), ID: "a1", Name: "Planner", Description: "plans",
@@ -101,4 +96,42 @@ func TestRenderPolicyDetailVersions(t *testing.T) {
 	}))
 	mustContain(t, body, "Production", "prod", "ed25519", "key-1",
 		`data-uk-copy="sha256:deadbeef"`, "Back to policies")
+}
+
+// TestRenderPolicyDetailPermittedRoles asserts the policy detail page renders the
+// permitted-role badges, the policyctl note, and (only with CanManage) the edit
+// affordance with the current selection pre-checked.
+func TestRenderPolicyDetailPermittedRoles(t *testing.T) {
+	body := render(t, PolicyDetail(PolicyDetailData{
+		Chrome: sampleChrome("policies"), ID: "p1", Name: "Production",
+		CurrentVersion: "1", Created: TimeView{Relative: "1 day ago"},
+		CanManage:        true,
+		PermittedRoles:   []RoleBadge{{Name: "Deployer"}},
+		AllRoles:         []RoleOption{{ID: "r-deploy", Name: "Deployer"}, {ID: "r-owner", Name: "Owner"}},
+		PermittedRoleIDs: []string{"r-deploy"},
+	}))
+	mustContain(t, body, "Permitted roles", "Deployer", "Edit permitted roles",
+		`data-uk-modal-open="policy-roles-p1"`, "policyctl", "checked")
+
+	ro := render(t, PolicyDetail(PolicyDetailData{
+		Chrome: sampleChrome("policies"), ID: "p1", Name: "Production",
+		CurrentVersion: "1", Created: TimeView{Relative: "now"},
+	}))
+	if strings.Contains(ro, "Edit permitted roles") {
+		t.Errorf("edit affordance must be hidden without CanManage")
+	}
+	if !strings.Contains(ro, "No role is granted by this policy") {
+		t.Errorf("empty permitted-roles set should render the no-role note")
+	}
+}
+
+// TestRenderPoliciesCreateModalHasPermittedRoles asserts the New-policy dialog
+// offers the permitted-roles checklist built from the org's roles.
+func TestRenderPoliciesCreateModalHasPermittedRoles(t *testing.T) {
+	body := render(t, Policies(PoliciesData{
+		Chrome: sampleChrome("policies"), CanManage: true,
+		Roles: []RoleOption{{ID: "r-deploy", Name: "Deployer"}},
+	}))
+	mustContain(t, body, "New policy", "Permitted roles", "Deployer",
+		`name="permitted_roles"`, `value="r-deploy"`)
 }

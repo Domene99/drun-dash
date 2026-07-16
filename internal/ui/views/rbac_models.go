@@ -1,7 +1,7 @@
 package views
 
 // This file holds the view models and small presentation helpers for the RBAC
-// governance pages (Roles, Members, Teams) and the read-only Agents/Policies
+// governance pages (Roles, Members) and the read-only Agents/Policies
 // detail views (ADR-0006). Like the rest of the package they are pure
 // presentation: internal/ui assembles them from control-plane responses and the
 // templ views render them. Raw UUIDs only ever appear inside an ID chip, never
@@ -94,26 +94,6 @@ type MemberView struct {
 	RoleIDs     []string
 }
 
-// TeamsData is the view model for the Teams page (/teams). The control plane
-// exposes no team-management endpoints in this batch, so the page is read-only:
-// Available is false and the view renders an explanatory notice (ADR-0006).
-type TeamsData struct {
-	Chrome    Chrome
-	Error     string
-	Available bool
-	Teams     []TeamView
-}
-
-// TeamView is one row of the Teams table (name, member count, roles), used when
-// the API exposes teams. It is defined now so enabling a teams endpoint later is
-// a wiring change, not a view rewrite.
-type TeamView struct {
-	ID          string
-	Name        string
-	MemberCount string
-	RoleBadges  []RoleBadge
-}
-
 // AgentsData is the view model for the Agents catalog list (/agents): the entry
 // point into the read-only agent detail views.
 type AgentsData struct {
@@ -182,6 +162,9 @@ type PoliciesData struct {
 	Error     string
 	CanManage bool
 	Policies  []PolicyListRow
+	// Roles is the org's roles, offered as the create dialog's permitted-roles
+	// checklist (populated only for a manager who may create policies).
+	Roles []RoleOption
 }
 
 // PolicyListRow is one row of the Policies table.
@@ -204,6 +187,14 @@ type PolicyDetailData struct {
 	CurrentVersion string
 	Created        TimeView
 	Versions       []PolicyVersionRow
+	// CanManage gates the "Edit permitted roles" affordance (policies.manage).
+	CanManage bool
+	// PermittedRoles are the roles this policy grants (resolved ids->names) for
+	// display; AllRoles is the full catalog and PermittedRoleIDs the current
+	// selection, both feeding the edit checklist.
+	PermittedRoles   []RoleBadge
+	AllRoles         []RoleOption
+	PermittedRoleIDs []string
 }
 
 // PolicyVersionRow is one row of a policy's version history. Digest is shown as
@@ -243,6 +234,15 @@ func agentDetailPath(agentID string) string {
 func policyDetailPath(policyID string) string {
 	return "/policies/" + policyID
 }
+
+// policyRolesPath is the edit-permitted-roles POST URL for a policy id.
+func policyRolesPath(policyID string) string {
+	return "/policies/" + policyID + "/roles"
+}
+
+// policyRolesModalID derives the per-policy edit-permitted-roles modal element
+// id so the detail page's Edit control opens the matching dialog.
+func policyRolesModalID(policyID string) string { return "policy-roles-" + policyID }
 
 // roleEditModalID / roleDeleteModalID derive the per-row modal element ids so a
 // row's Edit/Delete controls open the matching dialog.

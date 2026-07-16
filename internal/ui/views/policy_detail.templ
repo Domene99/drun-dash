@@ -49,7 +49,7 @@ templ Policies(data PoliciesData) {
 			}
 		}
 		if data.CanManage {
-			@policyCreateModal()
+			@policyCreateModal(data.Roles)
 		}
 	}
 }
@@ -64,10 +64,12 @@ templ policiesHeaderAction(data PoliciesData) {
 	}
 }
 
-// policyCreateModal renders the New-policy dialog: name, description, and the
-// initial boundary (allowed tools, network posture, fan-out ceiling). It posts to
-// /policies (POST /policies), which creates the policy and its version 1.
-templ policyCreateModal() {
+// policyCreateModal renders the New-policy dialog: name, description, the initial
+// boundary (allowed tools, network posture, fan-out ceiling), and the permitted
+// roles to grant. It posts to /policies (POST /policies), which creates the
+// policy and its version 1; the handler then applies the permitted roles via
+// PUT /policies/{id}/roles (free and unsigned, unlike the signed boundary).
+templ policyCreateModal(roles []RoleOption) {
 	@uikit.Modal(uikit.ModalConfig{ID: "policy-create", Title: "New policy"}) {
 		<form method="post" action="/policies">
 			@uikit.Field(uikit.FieldConfig{Label: "Name", For: "policy-name", Required: true}) {
@@ -88,6 +90,15 @@ templ policyCreateModal() {
 			}
 			@uikit.Field(uikit.FieldConfig{Label: "Fan-out ceiling", For: "policy-fan-out", Help: "Default ceiling on concurrent sub-agents. Leave blank for the engine default."}) {
 				@uikit.Input(uikit.InputConfig{ID: "policy-fan-out", Name: "fan_out_ceiling", Type: "number", Attrs: templ.Attributes{"min": "0", "step": "1"}})
+			}
+			@uikit.Field(uikit.FieldConfig{Label: "Permitted roles", Help: "Members in these roles can access agents governed by this policy. Leave empty = no role is granted by this policy (agents with no policy are open to any member who can run)."}) {
+				if len(roles) == 0 {
+					<p class="uk-muted">No roles to grant yet. Create roles first, then edit this policy's permitted roles.</p>
+				} else {
+					for _, role := range roles {
+						@uikit.Check(uikit.CheckConfig{Name: "permitted_roles", Value: role.ID, Label: role.Name})
+					}
+				}
 			}
 			<div class="uk-modal-footer">
 				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Attrs: templ.Attributes{"data-uk-modal-close": true}}) {
@@ -131,6 +142,7 @@ templ PolicyDetail(data PolicyDetailData) {
 					@uikit.RelativeTime(uikit.RelativeTimeConfig{Relative: data.Created.Relative, Absolute: data.Created.Absolute})
 				}
 			}
+			@policyPermittedRolesCard(data)
 			@uikit.Card(uikit.CardConfig{Title: "Versions"}) {
 				if len(data.Versions) == 0 {
 					@uikit.EmptyState(uikit.EmptyStateConfig{
@@ -179,5 +191,65 @@ templ PolicyDetail(data PolicyDetailData) {
 templ policyDetailBack() {
 	@uikit.ButtonLink(uikit.ButtonLinkConfig{Variant: uikit.ButtonSecondary, Href: "/policies"}) {
 		Back to policies
+	}
+}
+
+// policyPermittedRolesCard renders the policy's permitted roles (the members who
+// can access agents governed by it, per ADR-0010) with an Edit affordance for a
+// policies.manage caller, and a note that boundary/guardrail changes are
+// published via policyctl (not editable here — they require a signature the
+// browser cannot produce).
+templ policyPermittedRolesCard(data PolicyDetailData) {
+	@uikit.Card(uikit.CardConfig{Title: "Permitted roles", Action: policyRolesEditAction(data)}) {
+		@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantInfo}) {
+			Members in these roles can access agents governed by this policy. Only the permitted roles are editable here — boundary and guardrail changes are published with <code>policyctl</code> (they require a signature the browser cannot produce).
+		}
+		if len(data.PermittedRoles) == 0 {
+			<p class="uk-muted">No role is granted by this policy. Agents governed by it are reachable only by super-admins (an agent with no policy stays open to any member who can run).</p>
+		} else {
+			@roleBadges(data.PermittedRoles)
+		}
+	}
+	if data.CanManage {
+		@policyRolesModal(data)
+	}
+}
+
+// policyRolesEditAction renders the "Edit permitted roles" button in the card
+// header, but only for a caller who may manage policies (policies.manage);
+// otherwise it renders nothing so the section stays read-only.
+templ policyRolesEditAction(data PolicyDetailData) {
+	if data.CanManage {
+		@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Small: true, Attrs: templ.Attributes{"data-uk-modal-open": policyRolesModalID(data.ID)}}) {
+			Edit permitted roles
+		}
+	}
+}
+
+// policyRolesModal renders the edit-permitted-roles dialog: a checklist of the
+// org's roles, pre-checked for the policy's current set, posting the full desired
+// set (replace semantics) to PUT /policies/{id}/roles. Editing permitted roles is
+// free and unsigned; the signed boundary is not touched.
+templ policyRolesModal(data PolicyDetailData) {
+	@uikit.Modal(uikit.ModalConfig{ID: policyRolesModalID(data.ID), Title: "Edit permitted roles"}) {
+		<form method="post" action={ templ.SafeURL(policyRolesPath(data.ID)) }>
+			@uikit.Field(uikit.FieldConfig{Label: "Permitted roles", Help: "Members in these roles can access agents governed by this policy. Leave empty to grant no role. Boundary and guardrail changes are published separately with policyctl."}) {
+				if len(data.AllRoles) == 0 {
+					<p class="uk-muted">No roles available to grant.</p>
+				} else {
+					for _, role := range data.AllRoles {
+						@uikit.Check(uikit.CheckConfig{Name: "permitted_roles", Value: role.ID, Label: role.Name, Checked: contains(data.PermittedRoleIDs, role.ID)})
+					}
+				}
+			}
+			<div class="uk-modal-footer">
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Attrs: templ.Attributes{"data-uk-modal-close": true}}) {
+					Cancel
+				}
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
+					Save permitted roles
+				}
+			</div>
+		</form>
 	}
 }

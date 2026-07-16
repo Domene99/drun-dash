@@ -38,8 +38,13 @@ type Chrome struct {
 type IdentityView struct {
 	Subject        string
 	OrganizationID string
-	Email          string
-	Roles          string
+	// Name, Email, and OrgName are the human-readable identity the top bar
+	// renders in plain text (never the raw subject/org UUID as a primary label).
+	Name    string
+	Email   string
+	OrgName string
+	OrgSlug string
+	Roles   string
 }
 
 // TimeView pairs a human relative time ("3 minutes ago") with the absolute
@@ -230,7 +235,6 @@ func navGroups(active string) []uikit.NavGroup {
 			item("endpoints", "Endpoints", "/endpoints", true),
 			item("members", "Members", "/members", true),
 			item("roles", "Roles", "/roles", true),
-			item("teams", "Teams", "/teams", true),
 		}},
 		{Label: "Analyze", Items: []uikit.NavItem{
 			item("spend", "Spend", "/spend", true),

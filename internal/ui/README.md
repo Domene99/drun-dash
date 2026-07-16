@@ -80,7 +80,12 @@ summary, not a JWT-claims dump).
   (`POST /agents/{id}/versions`); `ExchangeSession` (`POST /auth/session`,
   unauthenticated — trades the OIDC ID token for a session JWT); and
   `ApproveDevice` (`POST /auth/device/approve` — approves/denies a CLI device
-  request with the member's Bearer token).
+  request with the member's Bearer token); and the policy permitted-roles
+  helpers `GetPolicyRoles` (`GET /policies/{id}/roles`) and `SetPolicyRoles`
+  (`PUT /policies/{id}/roles`), which read and replace the roles a policy grants
+  (policy-centric access, ADR-0010). `Identity` (`/auth/whoami`) also carries the
+  enriched `name`, `email`, `org_name`, and `org_slug` the top bar renders in
+  plain text.
 - **`server.go`** — a `chi` router and the request handlers. It also builds the
   fully-resolved view models: `buildChrome` assembles the shell chrome
   (identity for the user menu, active nav, environment); `buildSummary` the
@@ -123,6 +128,13 @@ summary, not a JWT-claims dump).
   - `GET /agents/new` + `POST /agents` — the create-agent form (requires
     `agents.manage`): `POST /agents` then `POST /agents/{id}/versions` to publish
     version 1, then land on the agent detail page.
+  - `POST /policies` — create a policy (and its version 1); the handler then
+    applies the selected permitted roles via `PUT /policies/{id}/roles`.
+  - `POST /policies/{policyId}/roles` — replace a policy's permitted roles from
+    the detail page's edit dialog (requires `policies.manage`). Publishing a new
+    signed boundary version is out of scope — it needs a `policyctl` signature
+    the browser cannot produce — so permitted roles (and metadata) are the only
+    policy edits the UI performs.
   - `GET /device?user_code=…` — the CLI device-approval confirmation page
     (behind auth).
   - `POST /device` — record the approve/deny decision via `ApproveDevice`.
