@@ -1563,10 +1563,27 @@ components:
           description: Stable principal identifier.
         organization_id:
           $ref: '#/components/schemas/Id'
+        org_name:
+          type: string
+          description: >-
+            The organization's display name, resolved from the database. Present
+            for a member token; omitted for a member-less token.
+        org_slug:
+          type: string
+          description: >-
+            The organization's slug, resolved from the database. Present for a
+            member token; omitted for a member-less token.
+        name:
+          type: string
+          description: >-
+            The member's display name, resolved from the database. May be empty
+            when the member has none; omitted for a member-less token.
         email:
           type: string
           format: email
-          description: Principal email, when available.
+          description: >-
+            The member's email, resolved from the database. Omitted for a
+            member-less token.
         roles:
           type: array
           description: >-

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -39,12 +40,34 @@ type tokenResponse struct {
 // per request so the admin UI can show/hide admin actions against the caller's
 // live grants; roles remains the coarse member_role claim carried on the token
 // (identity metadata, no longer an authorization input).
+//
+// name/email and org_name/org_slug are the human-readable principal and tenant,
+// loaded from the members/organizations tables (never the token) so the admin
+// UI can show the signed-in person and their org in plain text instead of the
+// synthetic subject and the org UUID. They are omitted on a member-less token,
+// which carries no member or org to enrich.
 type identityResponse struct {
 	Subject        string   `json:"subject"`
 	OrganizationID string   `json:"organization_id"`
+	OrgName        string   `json:"org_name,omitempty"`
+	OrgSlug        string   `json:"org_slug,omitempty"`
+	Name           string   `json:"name,omitempty"`
 	Email          string   `json:"email,omitempty"`
 	Roles          []string `json:"roles"`
 	Permissions    []string `json:"permissions"`
+}
+
+// orgByIDReader is the narrow org-lookup GET /auth/whoami needs: resolve an
+// organization by its id so the response can carry the org's name and slug in
+// plain text. It is the same package-level-var seam as newMemberDirectory and
+// newAccessResolver, so tests swap in a fake and production constructs the real
+// store over the request's pool.
+type orgByIDReader interface {
+	GetByID(ctx context.Context, id string) (store.Organization, error)
+}
+
+var newOrgByIDReader = func(q store.Querier) orgByIDReader {
+	return store.NewOrganizationStore(q)
 }
 
 // exchangeOidcSession implements POST /auth/session (operationId
@@ -138,7 +161,15 @@ func (d Deps) exchangeOidcSession(w http.ResponseWriter, r *http.Request) {
 // ADR-0006 §7, adds the caller's effective permission set. Permissions are
 // resolved from the database per request (never from the token), so the admin UI
 // renders admin actions against live grants and a revoked role disappears on the
-// next call. email is not carried on the token, so it is omitted.
+// next call.
+//
+// For a member token it additionally loads the member and organization rows so
+// the response carries the signed-in person's name/email and the org's
+// name/slug in plain text — the admin UI shows those instead of the synthetic
+// local:<uuid> subject and the org UUID. These come from the database, never
+// the token. A member-less (roles-only) token has no member or org to enrich
+// and no grants to resolve, so it echoes only the token's subject/org with an
+// empty permission set.
 func (d Deps) getCurrentIdentity(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	claims := authmw.MustPrincipal(ctx)
@@ -150,10 +181,40 @@ func (d Deps) getCurrentIdentity(w http.ResponseWriter, r *http.Request) {
 		roles = []string{}
 	}
 
-	// A token without a member id (a roles-only principal) has no grants to
-	// resolve, so its effective permission set is empty by definition.
-	permissions := []string{}
+	resp := identityResponse{
+		Subject:        claims.Subject,
+		OrganizationID: claims.OrgID,
+		Roles:          roles,
+		Permissions:    []string{},
+	}
+
 	if claims.MemberID != "" {
+		// Resolve the member and org from the database (never the token) so the
+		// UI renders live name/email/org. A lookup failure is a 500 with the
+		// generic body writeInternalError emits; the log records which lookup
+		// failed but the response never discloses it.
+		member, err := newMemberDirectory(d.Pool).GetByID(ctx, claims.MemberID)
+		if err != nil {
+			slog.Error("whoami: load member",
+				slog.String("member_id", claims.MemberID), slog.Any("error", err))
+			writeInternalError(w)
+			return
+		}
+		resp.Email = member.Email
+		if member.DisplayName != nil {
+			resp.Name = *member.DisplayName
+		}
+
+		org, err := newOrgByIDReader(d.Pool).GetByID(ctx, claims.OrgID)
+		if err != nil {
+			slog.Error("whoami: load organization",
+				slog.String("org_id", claims.OrgID), slog.Any("error", err))
+			writeInternalError(w)
+			return
+		}
+		resp.OrgName = org.Name
+		resp.OrgSlug = org.Slug
+
 		effective, err := newAccessResolver(d.Pool).EffectivePermissions(ctx, claims.MemberID)
 		if err != nil {
 			slog.Error("whoami: resolve effective permissions",
@@ -161,18 +222,14 @@ func (d Deps) getCurrentIdentity(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w)
 			return
 		}
-		permissions = make([]string, len(effective))
+		permissions := make([]string, len(effective))
 		for i, p := range effective {
 			permissions[i] = string(p)
 		}
+		resp.Permissions = permissions
 	}
 
-	WriteOK(w, identityResponse{
-		Subject:        claims.Subject,
-		OrganizationID: claims.OrgID,
-		Roles:          roles,
-		Permissions:    permissions,
-	})
+	WriteOK(w, resp)
 }
 
 // writeUnauthorized writes the single generic 401 used for every
