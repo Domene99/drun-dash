@@ -227,6 +227,7 @@ func navGroups(active string) []uikit.NavGroup {
 		}},
 		{Label: "Govern", Items: []uikit.NavItem{
 			item("policies", "Policies", "/policies", true),
+			item("endpoints", "Endpoints", "/endpoints", true),
 			item("members", "Members", "/members", true),
 			item("roles", "Roles", "/roles", true),
 			item("teams", "Teams", "/teams", true),

@@ -28,7 +28,7 @@ templ AgentNew(data AgentNewData) {
 					}
 				}
 				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantInfo, Title: "Before it can run"}) {
-					Creating an agent here registers it and publishes version 1. To actually run it you must also pin a model endpoint to the version (endpoint management ships in a later batch).
+					Creating an agent here registers it and publishes version 1. To actually run it, pin a model endpoint (with an API key on file) and a policy below. Manage endpoints on the Endpoints page and policies on the Policies page.
 				}
 				<form method="post" action="/agents">
 					@uikit.Field(uikit.FieldConfig{Label: "Name", For: "agent-name", Required: true}) {
@@ -46,11 +46,19 @@ templ AgentNew(data AgentNewData) {
 					@uikit.Field(uikit.FieldConfig{Label: "Fan-out ceiling", For: "agent-fan-out", Help: "Maximum concurrent sub-agents a session on this version may launch. 0 disables fan-out."}) {
 						@uikit.Input(uikit.InputConfig{ID: "agent-fan-out", Name: "fan_out_ceiling", Type: "number", Value: data.FanOutCeiling, Attrs: templ.Attributes{"min": "0", "step": "1"}})
 					}
-					@uikit.Field(uikit.FieldConfig{Label: "Default policy", For: "agent-policy", Help: "Optional. The policy boundary sessions for this agent run under."}) {
+					@uikit.Field(uikit.FieldConfig{Label: "Default policy", For: "agent-policy", Help: "Optional. The policy boundary sessions for this agent run under; its latest version is pinned to this agent's version 1."}) {
 						@uikit.Select(uikit.SelectConfig{ID: "agent-policy", Name: "default_policy_id"}) {
-							<option value="">No policy</option>
+							<option value="" selected?={ data.PolicyID == "" }>No policy</option>
 							for _, p := range data.Policies {
-								<option value={ p.ID }>{ p.Name }</option>
+								<option value={ p.ID } selected?={ p.ID == data.PolicyID }>{ p.Name }</option>
+							}
+						}
+					}
+					@uikit.Field(uikit.FieldConfig{Label: "Model endpoint", For: "agent-endpoint", Help: "Optional but required to run. Pins the upstream endpoint (and its sealed key) this agent's version 1 calls."}) {
+						@uikit.Select(uikit.SelectConfig{ID: "agent-endpoint", Name: "endpoint_id"}) {
+							<option value="" selected?={ data.EndpointID == "" }>No endpoint</option>
+							for _, e := range data.Endpoints {
+								<option value={ e.ID } selected?={ e.ID == data.EndpointID }>{ e.Name }</option>
 							}
 						}
 					}

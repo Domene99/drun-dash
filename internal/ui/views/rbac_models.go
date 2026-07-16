@@ -175,11 +175,13 @@ type EntitlementRow struct {
 }
 
 // PoliciesData is the view model for the Policies list (/policies): the entry
-// point into the read-only policy detail views.
+// point into the read-only policy detail views. CanManage gates the "New policy"
+// header action and its create dialog (policies.manage).
 type PoliciesData struct {
-	Chrome   Chrome
-	Error    string
-	Policies []PolicyListRow
+	Chrome    Chrome
+	Error     string
+	CanManage bool
+	Policies  []PolicyListRow
 }
 
 // PolicyListRow is one row of the Policies table.
@@ -268,4 +270,84 @@ func memberLabel(m MemberView) string {
 		return m.DisplayName
 	}
 	return m.Email
+}
+
+// --- Endpoints -------------------------------------------------------------
+
+// EndpointsData is the view model for the Endpoints page (/endpoints): the org's
+// registered model endpoints. CanManage gates the create/edit/delete controls
+// (endpoints.manage); without it NoAccess renders a permission notice instead of
+// the table. Providers feeds the provider select in the create/edit forms. Error
+// carries a page-level message (a load or write failure). The stored API key is
+// never part of this model — only SecretSet (whether a key is on file) is.
+type EndpointsData struct {
+	Chrome    Chrome
+	Error     string
+	NoAccess  bool
+	CanManage bool
+	Endpoints []EndpointRow
+	Providers []string
+}
+
+// EndpointRow is one row of the Endpoints table. SecretSet drives the
+// "Key configured"/"No key" badge; the raw key is never rendered. Provider is
+// pre-selected in the row's edit dialog.
+type EndpointRow struct {
+	ID        string
+	Name      string
+	Provider  string
+	BaseURL   string
+	Active    bool
+	SecretSet bool
+	Created   TimeView
+}
+
+// EndpointOption is one selectable endpoint in the agent-create form's
+// model-endpoint dropdown. Name is the primary label (the app appends the
+// provider and a no-key hint); ID is the form value.
+type EndpointOption struct {
+	ID   string
+	Name string
+}
+
+// endpointUpdatePath is the update-form POST URL for an endpoint id.
+func endpointUpdatePath(id string) string {
+	return "/endpoints/" + id + "/update"
+}
+
+// endpointDeletePath is the delete POST URL for an endpoint id.
+func endpointDeletePath(id string) string {
+	return "/endpoints/" + id + "/delete"
+}
+
+// endpointEditModalID / endpointDeleteModalID derive the per-row modal element
+// ids so a row's Edit/Delete controls open the matching dialog.
+func endpointEditModalID(id string) string   { return "endpoint-edit-" + id }
+func endpointDeleteModalID(id string) string { return "endpoint-delete-" + id }
+
+// endpointKeyBadge summarises whether an endpoint has a sealed API key on file,
+// for the Endpoints table's key column (text + color, never the key itself).
+func endpointKeyBadge(secretSet bool) string {
+	if secretSet {
+		return "Key configured"
+	}
+	return "No key"
+}
+
+// endpointStatus renders an endpoint's active flag as a domain status string the
+// shared StatusBadge vocabulary colors.
+func endpointStatus(active bool) string {
+	if active {
+		return "active"
+	}
+	return "inactive"
+}
+
+// endpointKeyHelp is the edit-dialog help for the write-only API key field,
+// stating whether a key is currently on file and that leaving it blank keeps it.
+func endpointKeyHelp(secretSet bool) string {
+	if secretSet {
+		return "A key is on file. Leave blank to keep it, or enter a new one to replace it."
+	}
+	return "No key is on file. Enter one so agents pinned to this endpoint can run."
 }

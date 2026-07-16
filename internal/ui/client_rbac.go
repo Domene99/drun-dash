@@ -125,6 +125,26 @@ type PolicyList struct {
 	NextCursor string   `json:"next_cursor,omitempty"`
 }
 
+// PolicyBoundary mirrors the PolicyBoundary schema: the declarative boundary a
+// policy version enforces. Every field is optional (FanOutCeiling is a pointer
+// so an omitted ceiling differs from 0); the concrete rule schema is free-form
+// and passed through as Rules.
+type PolicyBoundary struct {
+	AllowedTools  []string       `json:"allowed_tools,omitempty"`
+	Network       string         `json:"network,omitempty"`
+	FanOutCeiling *int           `json:"fan_out_ceiling,omitempty"`
+	Rules         map[string]any `json:"rules,omitempty"`
+}
+
+// PolicyCreate is the POST /policies body: a new policy plus its initial
+// boundary (the control plane auto-creates version 1). Name and Boundary are
+// required.
+type PolicyCreate struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Boundary    PolicyBoundary `json:"boundary"`
+}
+
 // SigningMetadata mirrors the SigningMetadata schema: the detached-signature
 // provenance recorded for a policy version.
 type SigningMetadata struct {
@@ -135,8 +155,11 @@ type SigningMetadata struct {
 }
 
 // PolicyVersion mirrors the PolicyVersion schema: one immutable, signed version
-// of a policy boundary.
+// of a policy boundary. ID is the version's stable identifier used to pin a
+// policy onto an agent version (AgentVersionCreate.policy_version_id); it is
+// optional here so an older control plane that omits it simply yields no pin.
 type PolicyVersion struct {
+	ID        string          `json:"id,omitempty"`
 	PolicyID  string          `json:"policy_id"`
 	Version   int             `json:"version"`
 	Digest    string          `json:"digest"`
@@ -255,6 +278,17 @@ func (c *Client) ListPolicies(ctx context.Context, token string) (*PolicyList, e
 		return nil, err
 	}
 	return &list, nil
+}
+
+// CreatePolicy calls POST /policies to create a policy and its first version
+// (version 1) from the supplied boundary, returning the policy. A duplicate name
+// is a 409. Requires policies.manage.
+func (c *Client) CreatePolicy(ctx context.Context, token string, req PolicyCreate) (*Policy, error) {
+	var policy Policy
+	if err := c.postJSON(ctx, token, "/policies", req, &policy); err != nil {
+		return nil, err
+	}
+	return &policy, nil
 }
 
 // GetPolicy calls GET /policies/{policyId} and returns the policy.

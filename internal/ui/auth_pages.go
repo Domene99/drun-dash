@@ -213,6 +213,7 @@ func (s *Server) handleAgentNew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data.Policies = s.policyOptions(r.Context(), token)
+	data.Endpoints = s.endpointOptions(r.Context(), token)
 	s.render(w, r, http.StatusOK, views.AgentNew(data))
 }
 
@@ -239,6 +240,9 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		form.FanOutCeiling = "0"
 	}
 	policyID := strings.TrimSpace(r.PostFormValue("default_policy_id"))
+	endpointID := strings.TrimSpace(r.PostFormValue("endpoint_id"))
+	form.PolicyID = policyID
+	form.EndpointID = endpointID
 
 	switch {
 	case form.Name == "":
@@ -269,11 +273,21 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Pin the selected policy's latest version and the model endpoint onto
+	// version 1 so the published agent is runnable. Resolving the policy version
+	// is best-effort (an empty id simply leaves the version's policy unpinned;
+	// the agent's default policy still governs it).
+	policyVersionID := ""
+	if policyID != "" {
+		policyVersionID = s.latestPolicyVersionID(r.Context(), token, policyID)
+	}
 	_, err = s.client.PublishAgentVersion(r.Context(), token, agent.ID, AgentVersionCreate{
-		SystemPrompt:  form.SystemPrompt,
-		AllowedTools:  parseToolList(form.AllowedTools),
-		FanOutCeiling: fanOut,
-		Notes:         "Initial version",
+		SystemPrompt:    form.SystemPrompt,
+		AllowedTools:    parseToolList(form.AllowedTools),
+		PolicyVersionID: policyVersionID,
+		EndpointID:      endpointID,
+		FanOutCeiling:   fanOut,
+		Notes:           "Initial version",
 	})
 	if errors.Is(err, ErrUnauthorized) {
 		s.redirectToLogin(w, r)
@@ -303,6 +317,7 @@ func (s *Server) renderAgentNewError(w http.ResponseWriter, r *http.Request, tok
 		form.NoAccess = true
 	} else {
 		form.Policies = s.policyOptions(r.Context(), token)
+		form.Endpoints = s.endpointOptions(r.Context(), token)
 	}
 	s.render(w, r, http.StatusOK, views.AgentNew(form))
 }
@@ -338,4 +353,26 @@ func parseToolList(raw string) []string {
 		}
 	}
 	return out
+}
+
+// latestPolicyVersionID resolves the id of a policy's latest version, for
+// pinning a policy onto a new agent version. Best-effort: any failure — or a
+// control plane that does not expose a version id — yields "" so the caller
+// simply leaves the version's policy unpinned. When several versions are
+// returned it picks the highest version number.
+func (s *Server) latestPolicyVersionID(ctx context.Context, token, policyID string) string {
+	list, err := s.client.ListPolicyVersions(ctx, token, policyID)
+	if err != nil {
+		if !errors.Is(err, ErrUnauthorized) {
+			s.logger.ErrorContext(ctx, "admin-ui: list policy versions for agent pin failed", slog.Any("error", err))
+		}
+		return ""
+	}
+	best, bestVersion := "", -1
+	for _, v := range list.Items {
+		if v.ID != "" && v.Version > bestVersion {
+			best, bestVersion = v.ID, v.Version
+		}
+	}
+	return best
 }

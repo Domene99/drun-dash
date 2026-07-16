@@ -39,7 +39,9 @@ type PolicyOption struct {
 // is expressed via NoAccess (the form is replaced with a permission notice when
 // the caller lacks agents.manage). The field values echo back on a failed submit;
 // AllowedTools is the raw textarea text (comma/newline separated). Policies feeds
-// the optional default-policy dropdown.
+// the optional default-policy dropdown; Endpoints feeds the optional
+// model-endpoint dropdown, and PolicyID/EndpointID echo the current selection
+// back on a failed submit so the operator does not have to reselect.
 type AgentNewData struct {
 	Chrome        Chrome
 	Error         string
@@ -50,4 +52,7 @@ type AgentNewData struct {
 	AllowedTools  string
 	FanOutCeiling string
 	Policies      []PolicyOption
+	PolicyID      string
+	Endpoints     []EndpointOption
+	EndpointID    string
 }
