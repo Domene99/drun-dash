@@ -2,29 +2,70 @@ package views
 
 import "github.com/Domene99/drun-dash/internal/uikit"
 
-// Login renders the device-authorization sign-in page. It shows the user code
-// the member confirms in the admin UI and a link to the verification page, then
-// embeds the approval poller (via [LoginPoll]) which watches for the member to
-// approve the request and, on success, navigates to the home page. When the
-// flow could not be started it renders the error instead.
+// Login renders the member sign-in page. It leads with the email/password form
+// (the primary local path, ADR-0008 §5) — org slug + email + password POSTed to
+// /login — and keeps the device-authorization flow below it for OIDC/SSO orgs:
+// the user code the member confirms in the admin UI, a link to the verification
+// page, and the [LoginPoll] approval poller that navigates home on approval.
+// PasswordError, when set, explains a failed sign-in; DeviceError, when set,
+// replaces the device section with why that flow could not start.
 templ Login(data LoginData) {
 	@Layout("Sign in", false) {
 		@uikit.PageHeader(uikit.PageHeaderConfig{
 			Title:       "Sign in",
-			Description: "Approve this device in the drun-dash admin UI to sign in.",
+			Description: "Sign in to your organization to launch and run agents.",
 		})
-		@uikit.Card(uikit.CardConfig{}) {
-			if data.Error != "" {
-				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger, Title: "Could not start sign-in"}) {
-					{ data.Error }
+		@uikit.Card(uikit.CardConfig{Title: "Email & password"}) {
+			if data.PasswordError != "" {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger, Title: "Could not sign in"}) {
+					{ data.PasswordError }
 				}
-				<p class="uk-muted">Reload the page to try again.</p>
+			}
+			<form method="post" action="/login">
+				@uikit.Field(uikit.FieldConfig{Label: "Organization", For: "org_slug", Required: true, Help: "Your organization's slug (e.g. acme)."}) {
+					@uikit.Input(uikit.InputConfig{
+						ID:          "org_slug",
+						Name:        "org_slug",
+						Value:       data.OrgSlug,
+						Placeholder: "acme",
+						Attrs:       templ.Attributes{"autocomplete": "organization", "autofocus": true, "required": true},
+					})
+				}
+				@uikit.Field(uikit.FieldConfig{Label: "Email", For: "email", Required: true}) {
+					@uikit.Input(uikit.InputConfig{
+						ID:          "email",
+						Name:        "email",
+						Type:        "email",
+						Value:       data.Email,
+						Placeholder: "you@example.com",
+						Attrs:       templ.Attributes{"autocomplete": "email", "required": true},
+					})
+				}
+				@uikit.Field(uikit.FieldConfig{Label: "Password", For: "password", Required: true}) {
+					@uikit.Input(uikit.InputConfig{
+						ID:    "password",
+						Name:  "password",
+						Type:  "password",
+						Attrs: templ.Attributes{"autocomplete": "current-password", "required": true},
+					})
+				}
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
+					Sign in
+				}
+			</form>
+		}
+		@uikit.Card(uikit.CardConfig{Title: "Single sign-on"}) {
+			if data.DeviceError != "" {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger, Title: "Could not start device sign-in"}) {
+					{ data.DeviceError }
+				}
+				<p class="uk-muted">Use email &amp; password above, or reload the page to try again.</p>
 			} else {
-				<p class="uk-muted">Confirm the code below matches, then approve the request.</p>
+				<p class="uk-muted">For OIDC/SSO organizations: confirm the code below matches, then approve the request in the drun-dash admin UI.</p>
 				<p class="mc-usercode">{ data.UserCode }</p>
 				if data.VerificationURIComplete != "" {
 					@uikit.ButtonLink(uikit.ButtonLinkConfig{
-						Variant: uikit.ButtonPrimary,
+						Variant: uikit.ButtonSecondary,
 						Href:    data.VerificationURIComplete,
 						Attrs:   templ.Attributes{"target": "_blank", "rel": "noopener"},
 					}) {

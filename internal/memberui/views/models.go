@@ -5,10 +5,24 @@ import (
 	"strconv"
 )
 
-// LoginData is the view model for the device-flow login page. On success it
-// carries the user code the member confirms and the verification link they open
-// to approve; Error, when non-empty, explains why the flow could not start.
+// LoginData is the view model for the login page, which offers two ways in:
+// email/password (the primary local path, ADR-0008 §5) and the device flow (for
+// OIDC/SSO orgs). The password fields drive the sign-in form; the device fields
+// carry the user code and verification link the member approves.
 type LoginData struct {
+	// --- email/password sign-in (primary) ---
+
+	// OrgSlug and Email are echoed back to repopulate the form after a failed
+	// attempt so the member need not retype them; the password is never echoed.
+	OrgSlug string
+	Email   string
+	// PasswordError is shown as an alert above the password form when a sign-in
+	// attempt fails. It is deliberately generic ("invalid credentials") and
+	// never reveals which field was wrong.
+	PasswordError string
+
+	// --- device flow (secondary; OIDC/SSO orgs) ---
+
 	// UserCode is the short code the member confirms in the admin UI.
 	UserCode string
 	// VerificationURI is where the member goes to approve the device.
@@ -18,8 +32,9 @@ type LoginData struct {
 	VerificationURIComplete string
 	// IntervalSeconds is how often the approval poller checks for completion.
 	IntervalSeconds int
-	// Error is shown as an alert when the flow could not be started.
-	Error string
+	// DeviceError is shown in the device-flow section when that flow could not
+	// be started; the password form still works.
+	DeviceError string
 }
 
 // PollData is the view model for the login approval poller fragment. Pending

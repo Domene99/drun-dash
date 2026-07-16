@@ -19,6 +19,12 @@
 // This package deliberately mirrors internal/ui (the admin UI) without
 // importing it: the two frontends serve different audiences, so the small
 // server/cookie/client pieces are replicated rather than shared.
+//
+// Members can also sign in with email/password (ADR-0008 §5): POST /auth/login
+// trades (org_slug, email, password) for the same session JWT, offered on the
+// login page alongside the device flow as the primary local path (the device
+// flow stays for OIDC/SSO orgs). Either way the JWT lands in the same HttpOnly
+// dd_member_session cookie.
 package memberui
 
 import (
@@ -231,6 +237,31 @@ func (c *Client) PollDeviceToken(ctx context.Context, deviceCode string) (string
 		}
 	}
 	return "", err
+}
+
+// Login calls POST /auth/login with the org slug, email, and password
+// (ADR-0008 §5): the local email/password sign-in path that lets an invited
+// member authenticate without the device flow. On success it returns the minted
+// control-plane session JWT. The control plane answers every failure — unknown
+// org, unknown email, no password set, wrong password, inactive member — with
+// the same generic 401, which surfaces here as [ErrUnauthorized]; the caller
+// shows a single "invalid credentials" message that reveals nothing about which
+// field was wrong.
+func (c *Client) Login(ctx context.Context, orgSlug, email, password string) (string, error) {
+	body := struct {
+		OrgSlug  string `json:"org_slug"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}{OrgSlug: orgSlug, Email: email, Password: password}
+
+	var tr tokenResponse
+	if err := c.postJSON(ctx, "", "/auth/login", body, &tr); err != nil {
+		return "", err
+	}
+	if tr.AccessToken == "" {
+		return "", errors.New("memberui: /auth/login returned no access_token")
+	}
+	return tr.AccessToken, nil
 }
 
 // GetEntitledAgents returns the agents the caller may launch. It prefers GET
