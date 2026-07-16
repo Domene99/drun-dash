@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -33,12 +34,17 @@ type tokenResponse struct {
 }
 
 // identityResponse is the GET /auth/whoami body
-// (openapi/v1.yaml #/components/schemas/Identity).
+// (openapi/v1.yaml #/components/schemas/Identity). permissions carries the
+// caller's effective permission set (ADR-0006 §7), resolved from the database
+// per request so the admin UI can show/hide admin actions against the caller's
+// live grants; roles remains the coarse member_role claim carried on the token
+// (identity metadata, no longer an authorization input).
 type identityResponse struct {
 	Subject        string   `json:"subject"`
 	OrganizationID string   `json:"organization_id"`
 	Email          string   `json:"email,omitempty"`
 	Roles          []string `json:"roles"`
+	Permissions    []string `json:"permissions"`
 }
 
 // exchangeOidcSession implements POST /auth/session (operationId
@@ -127,11 +133,15 @@ func (d Deps) exchangeOidcSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // getCurrentIdentity implements GET /auth/whoami (operationId
-// getCurrentIdentity). It echoes the principal established by RequireAuth: the
-// access token's subject, organization, and roles. It performs no lookups —
-// email is not carried on the token, so it is omitted here.
+// getCurrentIdentity). It echoes the principal established by RequireAuth — the
+// access token's subject, organization, and coarse roles claim — and, per
+// ADR-0006 §7, adds the caller's effective permission set. Permissions are
+// resolved from the database per request (never from the token), so the admin UI
+// renders admin actions against live grants and a revoked role disappears on the
+// next call. email is not carried on the token, so it is omitted.
 func (d Deps) getCurrentIdentity(w http.ResponseWriter, r *http.Request) {
-	claims := authmw.MustPrincipal(r.Context())
+	ctx := r.Context()
+	claims := authmw.MustPrincipal(ctx)
 
 	// roles is a required array in the contract; coerce a nil claim to an
 	// empty slice so it serialises as [] rather than null.
@@ -140,10 +150,28 @@ func (d Deps) getCurrentIdentity(w http.ResponseWriter, r *http.Request) {
 		roles = []string{}
 	}
 
+	// A token without a member id (a roles-only principal) has no grants to
+	// resolve, so its effective permission set is empty by definition.
+	permissions := []string{}
+	if claims.MemberID != "" {
+		effective, err := newAccessResolver(d.Pool).EffectivePermissions(ctx, claims.MemberID)
+		if err != nil {
+			slog.Error("whoami: resolve effective permissions",
+				slog.String("member_id", claims.MemberID), slog.Any("error", err))
+			writeInternalError(w)
+			return
+		}
+		permissions = make([]string, len(effective))
+		for i, p := range effective {
+			permissions[i] = string(p)
+		}
+	}
+
 	WriteOK(w, identityResponse{
 		Subject:        claims.Subject,
 		OrganizationID: claims.OrgID,
 		Roles:          roles,
+		Permissions:    permissions,
 	})
 }
 
