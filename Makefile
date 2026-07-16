@@ -1,5 +1,5 @@
 .PHONY: test test-integration lint-openapi docker-up docker-down docker-ps validate \
-	build run-control-plane run-proxy tools migrate-up migrate-down seed dev
+	build run-control-plane run-proxy tools migrate-up migrate-down seed dev fresh
 
 # Dev database URL. Override on the command line, e.g.
 #   make migrate-up DATABASE_URL=postgres://user:pass@host:5432/db?sslmode=disable
@@ -61,13 +61,25 @@ migrate-down:
 	@command -v migrate >/dev/null 2>&1 || { echo "migrate not found on PATH; run 'make tools' first."; exit 1; }
 	migrate -path migrations -database "$(DATABASE_URL)" down 1
 
-# Load seed data into DATABASE_URL (seed SQL lands in a sibling batch 3 issue).
+# Load the OPTIONAL demo/sample data into DATABASE_URL (deploy/seed/seed.sql).
+#
+# This is NOT part of the normal bring-up. A fresh install starts EMPTY and the
+# owner signs up their own org in the UI (see `make dev` / `make fresh`). Run
+# this only when you want a ready-made demo org (environments, teams, members,
+# endpoints, a policy, a budget, agents, and their RBAC role grants) for a demo
+# or a test fixture. It is idempotent — safe to re-run. Per ADR-0008 §8, the
+# demo seed is optional, not required to use the app.
 seed:
 	@command -v psql >/dev/null 2>&1 || { echo "psql not found on PATH; install the PostgreSQL client to seed."; exit 1; }
 	@test -f deploy/seed/seed.sql || { echo "deploy/seed/seed.sql not found yet; nothing to seed."; exit 0; }
 	psql "$(DATABASE_URL)" -f deploy/seed/seed.sql
 
 # One-command dev loop: start docker, wait for Postgres health, then migrate.
+#
+# This brings up an EMPTY app DB — no demo data. The normal path from here is to
+# open the admin UI and sign up your organization (you become Owner), then
+# create agents and invite members. The demo seed is opt-in: run `make seed`
+# separately only if you want the sample demo org.
 dev: docker-up
 	@echo "Waiting for Postgres to become healthy..."
 	@for i in $$(seq 1 30); do \
@@ -77,3 +89,10 @@ dev: docker-up
 		sleep 2; \
 	done
 	@$(MAKE) migrate-up
+	@echo "Empty DB ready. Next: open the admin UI and sign up your organization (you become Owner)."
+	@echo "Want sample demo data instead? Run 'make seed' (optional)."
+
+# Alias for the normal bring-up: an EMPTY DB ready for org signup (no seed).
+# Same as `make dev`; named to make the "start empty, sign up your org" path
+# obvious. Run `make seed` afterwards only if you want the optional demo data.
+fresh: dev

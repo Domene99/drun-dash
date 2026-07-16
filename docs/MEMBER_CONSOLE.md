@@ -276,7 +276,10 @@ cp deploy/docker/.env.app.example deploy/docker/.env.app   # first run only
 docker compose --env-file deploy/docker/.env.app \
   -f deploy/docker/docker-compose.app.yml up --build -d
 
-# 3. Seed the demo org (idempotent).
+# 3. Get an org and an agent you are entitled to launch. Either sign up your
+#    organization in the admin UI (http://localhost:8082) — you become Owner —
+#    and create an agent, OR load the OPTIONAL demo seed for a ready-made demo
+#    org (idempotent; a shortcut, not required):
 docker compose --env-file deploy/docker/.env.app \
   -f deploy/docker/docker-compose.app.yml \
   exec -T postgres psql -U drundash -d drundash < deploy/seed/seed.sql

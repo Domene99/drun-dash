@@ -2,7 +2,7 @@
 
 How to build and run the whole drun-dash platform (Postgres + Redis + the three
 service containers) with one command, plus the port map, per-service env
-reference, startup order, health endpoints, and how to seed demo data.
+reference, startup order, health endpoints, how to sign up your organization, and how to load the optional demo seed.
 
 For the infrastructure-only dev stack (just Postgres + Redis, no app
 containers) see [`deploy/docker/README.md`](../deploy/docker/README.md). This
@@ -156,11 +156,29 @@ inside each container.
 
 ---
 
-## 7. Seeding demo data
+## 7. First run — sign up your organization
 
+A fresh install starts **empty** — there is no demo org. The normal path is to
+**sign up your own organization** and become its Owner:
+
+1. Bring the stack up (§4). `migrate` creates the schema; **no demo data is
+   loaded** — the app DB is empty and ready for signup.
+2. Open the admin UI at <http://localhost:8082> and **sign up your
+   organization**. The first account becomes the **Owner** (super-admin); org
+   self-signup also seeds that org's built-in RBAC roles
+   (Owner / Admin / Auditor / Member).
+3. As Owner, create agents and **invite members**; invited members accept the
+   invitation, set a password, and sign in.
+
+No seed step is required to use the app.
+
+### 7.1 Optional — load demo/sample data
+
+Prefer a ready-made demo org for a walkthrough or a test fixture?
 [`deploy/seed/seed.sql`](../deploy/seed/seed.sql) loads a repeatable,
-**dev-only** demo dataset (one `demo` org with environments, teams, members,
-endpoints, a policy, a budget, and two agents). It requires the schema to be
+**dev-only**, **optional** demo dataset (one `demo` org with environments,
+teams, members, endpoints, a policy, a budget, two agents, and their RBAC role
+grants). It is **not** part of the normal bring-up. It requires the schema to be
 migrated first — with the stack up, that is already done.
 
 Apply it against the running Postgres container from the repository root:
