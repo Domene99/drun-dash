@@ -23,6 +23,11 @@ type fakeAgentVersionStore struct {
 	listVersions []store.AgentVersion
 	err          error
 
+	createRet    store.AgentVersion
+	createErr    error
+	createCalled bool
+	gotCreate    store.CreateAgentVersionParams
+
 	gotAgentID string
 	gotVersion int
 }
@@ -42,6 +47,31 @@ func (f *fakeAgentVersionStore) GetByAgentAndVersion(_ context.Context, agentID 
 func (f *fakeAgentVersionStore) ListByAgent(_ context.Context, agentID string) ([]store.AgentVersion, error) {
 	f.gotAgentID = agentID
 	return f.listVersions, f.err
+}
+
+// Create records the params, marks that it ran (so the publish tests can prove
+// the insert executed inside the transaction), and echoes the params back as a
+// stored row unless a canned return/error is set.
+func (f *fakeAgentVersionStore) Create(_ context.Context, p store.CreateAgentVersionParams) (store.AgentVersion, error) {
+	f.createCalled = true
+	f.gotCreate = p
+	if f.createErr != nil {
+		return store.AgentVersion{}, f.createErr
+	}
+	if f.createRet.ID != "" {
+		return f.createRet, nil
+	}
+	return store.AgentVersion{
+		ID:              "ver-new",
+		AgentID:         p.AgentID,
+		Version:         p.Version,
+		SystemPrompt:    p.SystemPrompt,
+		AllowedTools:    p.AllowedTools,
+		PolicyVersionID: p.PolicyVersionID,
+		EndpointID:      p.EndpointID,
+		BudgetID:        p.BudgetID,
+		FanOutCeiling:   p.FanOutCeiling,
+	}, nil
 }
 
 // fakeEntitlementStore backs the setAgentEntitlements handler tests (the legacy

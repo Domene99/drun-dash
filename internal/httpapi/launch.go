@@ -45,13 +45,15 @@ const proxyTokenBytes = 32
 // transaction).
 //
 // agentVersionStore and entitlementStore are shared with the agent catalog
-// handlers (agents.go): those add the version-history read (ListByAgent) and the
-// entitlement replace (Create/Delete) the launch path does not itself use, so
-// the interfaces carry a superset of the launch handlers' needs.
+// handlers (agents.go): those add the version-history read (ListByAgent), the
+// version publish (Create), and the entitlement replace (Create/Delete) the
+// launch path does not itself use, so the interfaces carry a superset of the
+// launch handlers' needs.
 
 type agentVersionStore interface {
 	GetByAgentAndVersion(ctx context.Context, agentID string, version int) (store.AgentVersion, error)
 	ListByAgent(ctx context.Context, agentID string) ([]store.AgentVersion, error)
+	Create(ctx context.Context, p store.CreateAgentVersionParams) (store.AgentVersion, error)
 }
 
 var newAgentVersionStore = func(q store.Querier) agentVersionStore {

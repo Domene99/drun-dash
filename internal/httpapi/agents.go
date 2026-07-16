@@ -26,6 +26,7 @@ type agentStore interface {
 	GetByID(ctx context.Context, id string) (store.Agent, error)
 	ListByOrgPage(ctx context.Context, orgID string, limit int, afterCreatedAt time.Time, afterID string) ([]store.Agent, error)
 	Update(ctx context.Context, id, name string, description *string) (store.Agent, error)
+	SetCurrentVersion(ctx context.Context, id string, version int) (store.Agent, error)
 	Delete(ctx context.Context, id string) error
 }
 
@@ -100,6 +101,26 @@ var withEntitlementTx = func(ctx context.Context, pool *db.Pool, fn func(entitle
 	return tx.Commit(ctx)
 }
 
+// withAgentVersionTx runs fn against an agent-version store and an agent store
+// bound to a single database transaction, committing on success and rolling
+// back on any error (or panic). publishAgentVersion uses it to make the
+// append-version-then-advance-pointer sequence atomic: if setting the agent's
+// current_version fails, the just-inserted version is rolled back rather than
+// left orphaned. It is a package var so tests can substitute an in-memory fake
+// that runs fn with no pool (the production default dereferences pool.Begin,
+// which the fake path skips entirely), mirroring withEntitlementTx.
+var withAgentVersionTx = func(ctx context.Context, pool *db.Pool, fn func(agentVersionStore, agentStore) error) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := fn(store.NewAgentVersionStore(tx), store.NewAgentStore(tx)); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // apiAgent is the OpenAPI Agent response schema
 // (openapi/v1.yaml #/components/schemas/Agent). The mapping from store.Agent is
 // decided in ADR-0002 §4a: latest_version ← CurrentVersion, default_policy_id
@@ -156,6 +177,22 @@ type apiAgentVersion struct {
 // envelope (a version history is bounded and returned whole, like policies).
 type apiAgentVersionList struct {
 	Items []apiAgentVersion `json:"items"`
+}
+
+// apiAgentVersionCreate is the OpenAPI AgentVersionCreate request body: the
+// manifest fields the agent_versions row requires (ADR-0002 §4b). manifest_digest
+// is no longer supplied by the client — it is computed server-side from these
+// fields and returned on the AgentVersion (see computeManifestDigest). The three
+// id pins are optional (nil stores NULL). allowed_tools omitted or empty grants
+// no tools. notes has no backing column and is accepted but not persisted.
+type apiAgentVersionCreate struct {
+	SystemPrompt    string   `json:"system_prompt"`
+	AllowedTools    []string `json:"allowed_tools"`
+	PolicyVersionID *string  `json:"policy_version_id"`
+	EndpointID      *string  `json:"endpoint_id"`
+	BudgetID        *string  `json:"budget_id"`
+	FanOutCeiling   int      `json:"fan_out_ceiling"`
+	Notes           *string  `json:"notes"`
 }
 
 // apiEntitlement is the OpenAPI Entitlement schema
@@ -459,14 +496,84 @@ func (d Deps) listAgentVersions(w http.ResponseWriter, r *http.Request) {
 }
 
 // publishAgentVersion implements POST /agents/{agentId}/versions (operationId
-// publishAgentVersion). It is a documented contract↔schema gap: AgentVersionCreate
-// carries only a manifest_digest, not the manifest fields (system_prompt,
-// allowed_tools, the pins, fan_out_ceiling) the store requires to create a
-// version, and v1 cannot expand a digest back into them. Per ADR-0002 §4b the
-// handler returns 501 not_implemented until the contract gains those fields.
+// publishAgentVersion). It appends a new immutable version carrying the agent's
+// editable config — system prompt, allowed tools, the optional policy/endpoint/
+// budget pins, and the fan-out ceiling (ADR-0002 §4b) — then advances the
+// agent's current_version pointer to it. The next version number is derived from
+// the agent's current_version (+1); a concurrent publish racing for the same
+// number loses on the unique (agent_id, version) constraint and surfaces as a
+// 409. A cross-org or missing agent is a 404. The insert and the pointer bump
+// run in one transaction so a failure never leaves an orphaned version. The
+// manifest_digest is computed from the stored fields and returned (not supplied
+// by the client). agents.manage is enforced by the router (ADR-0006 §6).
 func (d Deps) publishAgentVersion(w http.ResponseWriter, r *http.Request) {
-	_ = httpx.WriteError(w, http.StatusNotImplemented, httpx.CodeNotImplemented,
-		"publishAgentVersion is not implemented in v1: AgentVersionCreate carries only a manifest_digest, not the manifest fields the store requires (ADR-0002 §4b)")
+	ctx := r.Context()
+	claims := authmw.MustPrincipal(ctx)
+	agentID := chi.URLParam(r, "agentId")
+
+	var req apiAgentVersionCreate
+	if err := httpx.DecodeJSON(w, r, &req); err != nil {
+		_ = httpx.WriteError(w, http.StatusBadRequest, httpx.CodeBadRequest, err.Error())
+		return
+	}
+	if req.SystemPrompt == "" {
+		WriteValidationError(w, "system_prompt", "system_prompt is required")
+		return
+	}
+	if req.FanOutCeiling < 0 {
+		WriteValidationError(w, "fan_out_ceiling", "fan_out_ceiling must not be negative")
+		return
+	}
+
+	agent, err := newAgentStore(d.Pool).GetByID(ctx, agentID)
+	if err != nil {
+		WriteStoreError(w, err)
+		return
+	}
+	if !SameOrg(claims.OrgID, agent.OrgID) {
+		WriteNotFound(w, "resource not found")
+		return
+	}
+
+	// allowed_tools is stored verbatim as the jsonb array the digest hashes; a
+	// nil/empty slice marshals to "[]", the column's default.
+	tools := req.AllowedTools
+	if tools == nil {
+		tools = []string{}
+	}
+	toolsJSON, err := json.Marshal(tools)
+	if err != nil {
+		_ = httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternal, "internal error")
+		return
+	}
+
+	next := agent.CurrentVersion + 1
+	var created store.AgentVersion
+	err = withAgentVersionTx(ctx, d.Pool, func(vs agentVersionStore, as agentStore) error {
+		v, err := vs.Create(ctx, store.CreateAgentVersionParams{
+			AgentID:         agent.ID,
+			Version:         next,
+			SystemPrompt:    req.SystemPrompt,
+			AllowedTools:    toolsJSON,
+			PolicyVersionID: req.PolicyVersionID,
+			EndpointID:      req.EndpointID,
+			BudgetID:        req.BudgetID,
+			FanOutCeiling:   req.FanOutCeiling,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := as.SetCurrentVersion(ctx, agent.ID, next); err != nil {
+			return err
+		}
+		created = v
+		return nil
+	})
+	if err != nil {
+		WriteStoreError(w, err)
+		return
+	}
+	WriteCreated(w, toAPIAgentVersion(created))
 }
 
 // listAgentEntitlements implements GET /agents/{agentId}/entitlements

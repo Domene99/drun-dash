@@ -27,19 +27,25 @@ type fakeAgentStore struct {
 	updateErr   error
 	deleteErr   error
 
+	setVersionAgent  store.Agent
+	setVersionErr    error
+	setVersionCalled bool
+
 	// Captured call arguments.
-	gotCreateOrg  string
-	gotCreateName string
-	gotCreateDesc *string
-	gotGetID      string
-	gotListOrg    string
-	gotListLimit  int
-	gotListAfterC time.Time
-	gotListAfterI string
-	gotUpdateID   string
-	gotUpdateName string
-	gotUpdateDesc *string
-	gotDeleteID   string
+	gotCreateOrg    string
+	gotCreateName   string
+	gotCreateDesc   *string
+	gotGetID        string
+	gotListOrg      string
+	gotListLimit    int
+	gotListAfterC   time.Time
+	gotListAfterI   string
+	gotUpdateID     string
+	gotUpdateName   string
+	gotUpdateDesc   *string
+	gotDeleteID     string
+	gotSetVersionID string
+	gotSetVersion   int
 }
 
 func (f *fakeAgentStore) Create(_ context.Context, orgID, name string, description *string) (store.Agent, error) {
@@ -65,6 +71,11 @@ func (f *fakeAgentStore) Update(_ context.Context, id, name string, description 
 func (f *fakeAgentStore) Delete(_ context.Context, id string) error {
 	f.gotDeleteID = id
 	return f.deleteErr
+}
+
+func (f *fakeAgentStore) SetCurrentVersion(_ context.Context, id string, version int) (store.Agent, error) {
+	f.gotSetVersionID, f.gotSetVersion, f.setVersionCalled = id, version, true
+	return f.setVersionAgent, f.setVersionErr
 }
 
 // setAgentStore points the newAgentStore seam at s for the duration of the

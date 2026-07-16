@@ -63,6 +63,10 @@ func (m mapAgentStore) Update(context.Context, string, string, *string) (store.A
 
 func (m mapAgentStore) Delete(context.Context, string) error { return nil }
 
+func (m mapAgentStore) SetCurrentVersion(context.Context, string, int) (store.Agent, error) {
+	return store.Agent{}, nil
+}
+
 // setMeEntitlementStore points the newMeEntitlementStore seam at s for the test,
 // restoring the production factory afterwards. It mutates a package-level var,
 // so callers must not run in parallel.
