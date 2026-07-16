@@ -145,3 +145,19 @@ func TestRenderLoginAndDeviceUseMinimalShell(t *testing.T) {
 	done := render(t, Device(DeviceData{UserCode: "WXYZ-1234", Done: true, Approved: true}))
 	mustContain(t, done, "Device approved", "uk-alert--success")
 }
+
+// TestRenderIdentityPlainText asserts the top-bar user menu shows the signed-in
+// user's name/email and org name in plain text (ADR-0005 §4) rather than the raw
+// local:<uuid> subject as the primary label.
+func TestRenderIdentityPlainText(t *testing.T) {
+	body := render(t, Dashboard(DashboardData{
+		Chrome: Chrome{Title: "Overview", Active: "overview",
+			Identity: IdentityView{Subject: "local:5f3a", OrganizationID: "org-9",
+				Name: "Ada Lovelace", Email: "ada@example.com", OrgName: "Acme Inc", Roles: "admin"}},
+		Summary: SummaryData{ActiveSessions: "0", PendingApprovals: "0", SpendTotal: "0", AgentCount: "0", SpendWindow: "(last 30 days)"},
+	}))
+	mustContain(t, body, "Ada Lovelace \u2014 ada@example.com", "Acme Inc")
+	if strings.Contains(body, ">local:5f3a</summary>") {
+		t.Errorf("raw subject must not be the primary user-menu label")
+	}
+}

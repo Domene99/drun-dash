@@ -14,7 +14,7 @@ import (
 	"github.com/Domene99/drun-dash/internal/ui/views"
 )
 
-// This file wires the RBAC governance pages (Roles, Members, Teams) and the
+// This file wires the RBAC governance pages (Roles, Members) and the
 // read-only Agents/Policies detail views onto the control-plane client
 // (ADR-0006 §7). Management actions are permission-gated from the caller's
 // effective permissions (GET /auth/whoami) so the UI never offers an action the
@@ -341,20 +341,6 @@ func (s *Server) renderMembersError(w http.ResponseWriter, r *http.Request, toke
 	s.render(w, r, http.StatusOK, views.Members(data))
 }
 
-// --- Teams -----------------------------------------------------------------
-
-// handleTeams renders the Teams page. The control plane exposes no team
-// endpoints in this batch, so the page is read-only and explains as much.
-func (s *Server) handleTeams(w http.ResponseWriter, r *http.Request) {
-	token := tokenFromContext(r.Context())
-	chrome, _, err := s.buildChrome(r.Context(), token, "teams", "Teams")
-	if err != nil {
-		s.redirectToLogin(w, r)
-		return
-	}
-	s.render(w, r, http.StatusOK, views.Teams(views.TeamsData{Chrome: chrome, Available: false}))
-}
-
 // --- Agents (list + read-only detail) --------------------------------------
 
 // handleAgents renders the agent catalog list, the entry point into the
@@ -454,6 +440,20 @@ func (s *Server) policyName(ctx context.Context, token, id string) string {
 	return ""
 }
 
+// policyRoleOptions lists the org's roles for the policy create dialog's
+// permitted-roles checklist, best-effort (nil on failure so the dialog still
+// renders, just without the checklist).
+func (s *Server) policyRoleOptions(ctx context.Context, token string) []views.RoleOption {
+	list, err := s.client.ListRoles(ctx, token)
+	if err != nil {
+		if !errors.Is(err, ErrUnauthorized) {
+			s.logger.ErrorContext(ctx, "admin-ui: list roles for policy create failed", slog.Any("error", err))
+		}
+		return nil
+	}
+	return roleOptions(list.Items)
+}
+
 // --- Policies (list + read-only detail) ------------------------------------
 
 // handlePolicies renders the policy catalog list, the entry point into the
@@ -466,6 +466,9 @@ func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := views.PoliciesData{Chrome: chrome, CanManage: hasPermission(perms, permPoliciesManage)}
+	if data.CanManage {
+		data.Roles = s.policyRoleOptions(r.Context(), token)
+	}
 	policies, err := s.client.ListPolicies(r.Context(), token)
 	switch {
 	case errors.Is(err, ErrUnauthorized):
@@ -513,7 +516,7 @@ func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 		Boundary:    boundary,
 	}
 
-	_, err := s.client.CreatePolicy(r.Context(), token, body)
+	policy, err := s.client.CreatePolicy(r.Context(), token, body)
 	if errors.Is(err, ErrUnauthorized) {
 		s.redirectToLogin(w, r)
 		return
@@ -522,6 +525,20 @@ func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 		s.logger.ErrorContext(r.Context(), "admin-ui: create policy failed", slog.Any("error", err))
 		s.renderPoliciesError(w, r, token, "Could not create policy: "+readableError(err))
 		return
+	}
+	// Permitted roles are set separately (PUT /policies/{id}/roles). Publishing a
+	// signed boundary version is out of the browser's reach, but granting roles is
+	// free — so a create can seed the policy's permitted roles in one flow.
+	if roleIDs := r.PostForm["permitted_roles"]; len(roleIDs) > 0 {
+		if err := s.client.SetPolicyRoles(r.Context(), token, policy.ID, roleIDs); err != nil {
+			if errors.Is(err, ErrUnauthorized) {
+				s.redirectToLogin(w, r)
+				return
+			}
+			s.logger.ErrorContext(r.Context(), "admin-ui: set policy roles on create failed", slog.Any("error", err))
+			s.renderPoliciesError(w, r, token, "Policy created, but its permitted roles could not be saved: "+readableError(err))
+			return
+		}
 	}
 	http.Redirect(w, r, "/policies", http.StatusSeeOther)
 }
@@ -536,6 +553,9 @@ func (s *Server) renderPoliciesError(w http.ResponseWriter, r *http.Request, tok
 		return
 	}
 	data := views.PoliciesData{Chrome: chrome, CanManage: hasPermission(perms, permPoliciesManage), Error: msg}
+	if data.CanManage {
+		data.Roles = s.policyRoleOptions(r.Context(), token)
+	}
 	policies, err := s.client.ListPolicies(r.Context(), token)
 	switch {
 	case errors.Is(err, ErrUnauthorized):
@@ -549,28 +569,44 @@ func (s *Server) renderPoliciesError(w http.ResponseWriter, r *http.Request, tok
 	s.render(w, r, http.StatusOK, views.Policies(data))
 }
 
-// handlePolicyDetail renders the read-only detail view for one policy and its
+// handlePolicyDetail renders the detail view for one policy: its metadata, its
+// permitted roles (with an edit affordance for policies.manage), and its
 // immutable signed versions.
 func (s *Server) handlePolicyDetail(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 	policyID := chi.URLParam(r, "policyId")
-	chrome, _, err := s.buildChrome(r.Context(), token, "policies", "Policy")
+	chrome, perms, err := s.buildChrome(r.Context(), token, "policies", "Policy")
 	if err != nil {
 		s.redirectToLogin(w, r)
 		return
 	}
-	data := views.PolicyDetailData{Chrome: chrome, ID: policyID}
-
-	policy, err := s.client.GetPolicy(r.Context(), token, policyID)
-	switch {
-	case errors.Is(err, ErrUnauthorized):
+	data, err := s.policyDetailData(r.Context(), token, chrome, perms, policyID, "")
+	if errors.Is(err, ErrUnauthorized) {
 		s.redirectToLogin(w, r)
 		return
+	}
+	s.render(w, r, http.StatusOK, views.PolicyDetail(data))
+}
+
+// policyDetailData assembles the policy-detail view model: the policy metadata,
+// its permitted roles (resolved ids->names via the roles catalog and carried
+// with the full catalog + current selection so a manager can edit the set), and
+// its signed versions. Only a rejected token is returned as ErrUnauthorized;
+// section failures degrade in place. formError seeds a message after a failed
+// permitted-roles write.
+func (s *Server) policyDetailData(ctx context.Context, token string, chrome views.Chrome, perms []string, policyID, formError string) (views.PolicyDetailData, error) {
+	data := views.PolicyDetailData{Chrome: chrome, ID: policyID, CanManage: hasPermission(perms, permPoliciesManage), Error: formError}
+
+	policy, err := s.client.GetPolicy(ctx, token, policyID)
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		return views.PolicyDetailData{}, err
 	case err != nil:
-		s.logger.ErrorContext(r.Context(), "admin-ui: get policy failed", slog.Any("error", err))
-		data.Error = "Could not load policy: " + readableError(err)
-		s.render(w, r, http.StatusOK, views.PolicyDetail(data))
-		return
+		s.logger.ErrorContext(ctx, "admin-ui: get policy failed", slog.Any("error", err))
+		if data.Error == "" {
+			data.Error = "Could not load policy: " + readableError(err)
+		}
+		return data, nil
 	}
 
 	now := s.now()
@@ -579,12 +615,70 @@ func (s *Server) handlePolicyDetail(w http.ResponseWriter, r *http.Request) {
 	data.CurrentVersion = strconv.Itoa(policy.CurrentVersion)
 	data.Created = relativeTime(now, policy.CreatedAt)
 
-	if versions, err := s.client.ListPolicyVersions(r.Context(), token, policyID); err != nil {
-		s.logBestEffort(r.Context(), "admin-ui: list policy versions failed", err)
+	// Permitted roles (policy-centric access, ADR-0010). Resolving ids to names
+	// needs the roles catalog (roles.manage); both calls are best-effort so a
+	// missing permission leaves the section informative rather than blanking it.
+	var roles []Role
+	if list, err := s.client.ListRoles(ctx, token); err != nil {
+		s.logBestEffort(ctx, "admin-ui: list roles for policy access failed", err)
+	} else {
+		roles = list.Items
+		data.AllRoles = roleOptions(roles)
+	}
+	if ids, err := s.client.GetPolicyRoles(ctx, token, policyID); err != nil {
+		s.logBestEffort(ctx, "admin-ui: get policy roles failed", err)
+	} else {
+		data.PermittedRoleIDs = ids
+		data.PermittedRoles = policyPermittedRoles(roles, ids)
+	}
+
+	if versions, err := s.client.ListPolicyVersions(ctx, token, policyID); err != nil {
+		s.logBestEffort(ctx, "admin-ui: list policy versions failed", err)
 	} else {
 		data.Versions = policyVersionRows(versions.Items, now)
 	}
+	return data, nil
+}
 
+// handlePolicyRoles replaces a policy's permitted-role set with the submitted
+// selection (PUT /policies/{policyId}/roles) and returns to the policy detail
+// page. This is the one policy edit the UI performs: granting roles is free and
+// unsigned, whereas publishing a new boundary version needs a policyctl
+// signature the browser cannot produce. Requires policies.manage.
+func (s *Server) handlePolicyRoles(w http.ResponseWriter, r *http.Request) {
+	token := tokenFromContext(r.Context())
+	policyID := chi.URLParam(r, "policyId")
+	if err := r.ParseForm(); err != nil {
+		s.renderPolicyDetailError(w, r, token, policyID, "Could not read the submitted form.")
+		return
+	}
+	err := s.client.SetPolicyRoles(r.Context(), token, policyID, r.PostForm["permitted_roles"])
+	if errors.Is(err, ErrUnauthorized) {
+		s.redirectToLogin(w, r)
+		return
+	}
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "admin-ui: set policy roles failed", slog.Any("error", err))
+		s.renderPolicyDetailError(w, r, token, policyID, "Could not update permitted roles: "+readableError(err))
+		return
+	}
+	http.Redirect(w, r, "/policies/"+policyID, http.StatusSeeOther)
+}
+
+// renderPolicyDetailError re-renders the policy detail page carrying a message
+// after a failed permitted-roles write, rebuilding the live data so the page
+// still reflects current state.
+func (s *Server) renderPolicyDetailError(w http.ResponseWriter, r *http.Request, token, policyID, msg string) {
+	chrome, perms, err := s.buildChrome(r.Context(), token, "policies", "Policy")
+	if err != nil {
+		s.redirectToLogin(w, r)
+		return
+	}
+	data, err := s.policyDetailData(r.Context(), token, chrome, perms, policyID, msg)
+	if errors.Is(err, ErrUnauthorized) {
+		s.redirectToLogin(w, r)
+		return
+	}
 	s.render(w, r, http.StatusOK, views.PolicyDetail(data))
 }
 
@@ -747,6 +841,45 @@ func agentRoleAccess(roles []Role, agentID string) []views.RoleBadge {
 		}
 	}
 	return out
+}
+
+// roleOptions maps roles to selectable checklist options (id for the form value,
+// name for the label).
+func roleOptions(roles []Role) []views.RoleOption {
+	out := make([]views.RoleOption, 0, len(roles))
+	for _, r := range roles {
+		out = append(out, views.RoleOption{ID: r.ID, Name: r.Name})
+	}
+	return out
+}
+
+// policyPermittedRoles resolves a policy's permitted-role ids to display badges,
+// looking each id up in the roles catalog for its name and built-in flag. A
+// stale id, or one the caller could not resolve (no roles.manage), degrades to a
+// short id label rather than a raw full UUID.
+func policyPermittedRoles(roles []Role, ids []string) []views.RoleBadge {
+	byID := make(map[string]Role, len(roles))
+	for _, r := range roles {
+		byID[r.ID] = r
+	}
+	out := make([]views.RoleBadge, 0, len(ids))
+	for _, id := range ids {
+		if r, ok := byID[id]; ok {
+			out = append(out, views.RoleBadge{Name: r.Name, Builtin: r.Builtin})
+		} else {
+			out = append(out, views.RoleBadge{Name: shortIDLabel(id)})
+		}
+	}
+	return out
+}
+
+// shortIDLabel truncates an unresolved id for display, keeping the label from
+// becoming a full raw UUID.
+func shortIDLabel(id string) string {
+	if len(id) > 8 {
+		return id[:8] + "…"
+	}
+	return id
 }
 
 // policyListRows maps policies to the catalog list rows.

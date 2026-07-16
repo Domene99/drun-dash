@@ -310,6 +310,36 @@ func (c *Client) ListPolicyVersions(ctx context.Context, token, id string) (*Pol
 	return &list, nil
 }
 
+// GetPolicyRoles calls GET /policies/{policyId}/roles and returns the ids of the
+// roles permitted to access agents governed by this policy (policy-centric
+// access, ADR-0010). An empty slice means the policy grants no role.
+func (c *Client) GetPolicyRoles(ctx context.Context, token, policyID string) ([]string, error) {
+	var resp struct {
+		RoleIDs []string `json:"role_ids"`
+	}
+	path := "/policies/" + url.PathEscape(policyID) + "/roles"
+	if err := c.getJSON(ctx, token, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.RoleIDs, nil
+}
+
+// SetPolicyRoles calls PUT /policies/{policyId}/roles to replace the policy's
+// permitted-role set with roleIDs. Editing permitted roles is free and unsigned,
+// unlike publishing a new boundary version (which needs a policyctl signature),
+// so this is the one policy mutation the browser performs. Requires
+// policies.manage.
+func (c *Client) SetPolicyRoles(ctx context.Context, token, policyID string, roleIDs []string) error {
+	if roleIDs == nil {
+		roleIDs = []string{}
+	}
+	body := struct {
+		RoleIDs []string `json:"role_ids"`
+	}{RoleIDs: roleIDs}
+	path := "/policies/" + url.PathEscape(policyID) + "/roles"
+	return c.putJSON(ctx, token, path, body, nil)
+}
+
 // putJSON issues a PUT with a JSON body, mirroring postJSON's status mapping.
 func (c *Client) putJSON(ctx context.Context, token, path string, reqBody, dst any) error {
 	return c.bodyJSON(ctx, http.MethodPut, token, path, reqBody, dst)

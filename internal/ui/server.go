@@ -158,7 +158,6 @@ func (s *Server) routes() chi.Router {
 		r.Get("/members", s.handleMembers)
 		r.Post("/members/invite", s.handleMemberInvite)
 		r.Post("/members/{memberId}/roles", s.handleMemberRoles)
-		r.Get("/teams", s.handleTeams)
 		r.Get("/agents", s.handleAgents)
 		r.Get("/agents/new", s.handleAgentNew)
 		r.Post("/agents", s.handleAgentCreate)
@@ -166,6 +165,7 @@ func (s *Server) routes() chi.Router {
 		r.Get("/policies", s.handlePolicies)
 		r.Post("/policies", s.handlePolicyCreate)
 		r.Get("/policies/{policyId}", s.handlePolicyDetail)
+		r.Post("/policies/{policyId}/roles", s.handlePolicyRoles)
 		r.Get("/endpoints", s.handleEndpoints)
 		r.Post("/endpoints", s.handleEndpointCreate)
 		r.Post("/endpoints/{id}/update", s.handleEndpointUpdate)
@@ -626,7 +626,10 @@ func (s *Server) buildChrome(ctx context.Context, token, active, title string) (
 		chrome.Identity = views.IdentityView{
 			Subject:        id.Subject,
 			OrganizationID: id.OrganizationID,
+			Name:           id.Name,
 			Email:          id.Email,
+			OrgName:        id.OrgName,
+			OrgSlug:        id.OrgSlug,
 			Roles:          rolesText(id.Roles),
 		}
 		return chrome, id.Permissions, nil

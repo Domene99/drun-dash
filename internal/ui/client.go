@@ -90,11 +90,17 @@ func NewClient(baseURL string, hc *http.Client) *Client {
 // Identity mirrors the Identity schema (GET /auth/whoami). Permissions carries
 // the caller's effective permission set (ADR-0006 §7), resolved by the control
 // plane per request; the admin UI uses it to show or hide the management actions
-// the caller lacks permission for.
+// the caller lacks permission for. Name, OrgName, and OrgSlug are the enriched,
+// human-readable fields the top bar renders in plain text so the visible
+// identity is a person and an organization, never a raw "local:<uuid>" subject
+// or an org UUID (all optional — an older control plane simply omits them).
 type Identity struct {
 	Subject        string   `json:"subject"`
 	OrganizationID string   `json:"organization_id"`
+	Name           string   `json:"name,omitempty"`
 	Email          string   `json:"email,omitempty"`
+	OrgName        string   `json:"org_name,omitempty"`
+	OrgSlug        string   `json:"org_slug,omitempty"`
 	Roles          []string `json:"roles"`
 	Permissions    []string `json:"permissions"`
 }
