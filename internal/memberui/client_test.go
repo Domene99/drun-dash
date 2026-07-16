@@ -233,3 +233,52 @@ func TestAPIError_FlatEnvelope(t *testing.T) {
 		t.Errorf("unexpected APIError: %+v", apiErr)
 	}
 }
+
+func TestLogin_Success(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/auth/login" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("login must be unauthenticated, got Authorization %q", got)
+		}
+		var body struct {
+			OrgSlug  string `json:"org_slug"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.OrgSlug != "acme" || body.Email != "a@example.com" || body.Password != "supersecret" {
+			t.Errorf("unexpected body %+v", body)
+		}
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "jwt-token", TokenType: "Bearer", ExpiresIn: 3600})
+	})
+	tok, err := c.Login(context.Background(), "acme", "a@example.com", "supersecret")
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if tok != "jwt-token" {
+		t.Errorf("token = %q, want jwt-token", tok)
+	}
+}
+
+func TestLogin_InvalidCredentials(t *testing.T) {
+	// The control plane answers every failure with a generic 401.
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"code": "unauthorized", "message": "invalid credentials"})
+	})
+	_, err := c.Login(context.Background(), "acme", "a@example.com", "wrong")
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("err = %v, want ErrUnauthorized", err)
+	}
+}
+
+func TestLogin_MissingToken(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse{})
+	})
+	if _, err := c.Login(context.Background(), "acme", "a@e.com", "pw"); err == nil {
+		t.Fatal("expected error on empty access_token, got nil")
+	}
+}

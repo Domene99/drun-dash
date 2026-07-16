@@ -275,6 +275,7 @@ func (s *Server) routes() chi.Router {
 
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/login", s.handleLogin)
+	r.Post("/login", s.handlePasswordLogin)
 	r.Get("/login/poll", s.handleLoginPoll)
 	r.Post("/logout", s.handleLogout)
 
@@ -304,33 +305,90 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	_, _ = io.WriteString(w, `{"status":"ok"}`)
 }
 
-// handleLogin begins the device-authorization flow: it asks the control plane
-// for a device+user code, stashes the device_code in the transient cookie, and
-// renders the page showing the user code and verification link plus an HTMX
-// poller that watches for approval. If the member is already signed in it goes
-// straight to the home page.
+// handleLogin renders the sign-in page. It leads with the email/password form
+// (the primary local path) and starts the device-authorization flow for the
+// secondary SSO section: it asks the control plane for a device+user code,
+// stashes the device_code in the transient cookie, and shows the user code,
+// verification link, and the HTMX poller that watches for approval. If the
+// member is already signed in it goes straight to the home page.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(sessionCookieName); err == nil && strings.TrimSpace(cookie.Value) != "" {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
+	s.renderLoginPage(w, r, http.StatusOK, views.LoginData{})
+}
 
-	da, err := s.client.StartDeviceAuthorization(r.Context(), s.clientID)
-	if err != nil {
-		s.logger.ErrorContext(r.Context(), "member-console: start device authorization", slog.Any("error", err))
-		s.render(w, r, http.StatusBadGateway, views.Login(views.LoginData{
-			Error: "Could not start sign-in: " + readableError(err),
-		}))
+// handlePasswordLogin implements email/password sign-in (ADR-0008 §5): it trades
+// (org slug, email, password) for a control-plane session JWT via POST
+// /auth/login, stores it in the HttpOnly dd_member_session cookie, and redirects
+// to the home/agent picker. A missing field or a rejected credential re-renders
+// the login page with a single generic "invalid credentials" message (echoing
+// the org/email but never the password) that reveals nothing about which field
+// failed; a control-plane outage is surfaced as a transient error.
+func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		s.renderLoginPage(w, r, http.StatusBadRequest, views.LoginData{
+			PasswordError: "Could not read the submitted form.",
+		})
+		return
+	}
+	orgSlug := strings.TrimSpace(r.PostFormValue("org_slug"))
+	email := strings.TrimSpace(r.PostFormValue("email"))
+	password := r.PostFormValue("password")
+
+	if orgSlug == "" || email == "" || password == "" {
+		s.renderLoginPage(w, r, http.StatusOK, views.LoginData{
+			OrgSlug:       orgSlug,
+			Email:         email,
+			PasswordError: "Enter your organization, email, and password.",
+		})
 		return
 	}
 
-	s.setTransientCookie(w, deviceCookieName, da.DeviceCode)
-	s.render(w, r, http.StatusOK, views.Login(views.LoginData{
-		UserCode:                da.UserCode,
-		VerificationURI:         da.VerificationURI,
-		VerificationURIComplete: da.VerificationURIComplete,
-		IntervalSeconds:         pollInterval(da.Interval),
-	}))
+	token, err := s.client.Login(r.Context(), orgSlug, email, password)
+	switch {
+	case err == nil:
+		s.setSessionCookie(w, token)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	case errors.Is(err, ErrUnauthorized):
+		// The control plane returns the same generic 401 for every failure mode
+		// (unknown org/email, wrong password, inactive); mirror that here.
+		s.renderLoginPage(w, r, http.StatusUnauthorized, views.LoginData{
+			OrgSlug:       orgSlug,
+			Email:         email,
+			PasswordError: "Invalid credentials. Check your organization, email, and password.",
+		})
+	default:
+		s.logger.ErrorContext(r.Context(), "member-console: password login", slog.Any("error", err))
+		s.renderLoginPage(w, r, http.StatusBadGateway, views.LoginData{
+			OrgSlug:       orgSlug,
+			Email:         email,
+			PasswordError: "Could not sign in right now: " + readableError(err),
+		})
+	}
+}
+
+// renderLoginPage starts (or restarts) the device-authorization flow and renders
+// the login page around the supplied form state (a password error plus the
+// echoed org/email). Starting the device flow here — on the initial GET and on a
+// failed password POST — keeps the secondary SSO section live without separate
+// wiring and sets the transient device cookie so the HTMX poller can resume. A
+// device-start failure is surfaced in that section (DeviceError) and never
+// blocks the primary password form.
+func (s *Server) renderLoginPage(w http.ResponseWriter, r *http.Request, status int, form views.LoginData) {
+	da, err := s.client.StartDeviceAuthorization(r.Context(), s.clientID)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "member-console: start device authorization", slog.Any("error", err))
+		form.DeviceError = "Could not start device sign-in: " + readableError(err)
+	} else {
+		s.setTransientCookie(w, deviceCookieName, da.DeviceCode)
+		form.UserCode = da.UserCode
+		form.VerificationURI = da.VerificationURI
+		form.VerificationURIComplete = da.VerificationURIComplete
+		form.IntervalSeconds = pollInterval(da.Interval)
+	}
+	s.render(w, r, status, views.Login(form))
 }
 
 // handleLoginPoll is the HTMX poll fragment. It reads the in-flight device_code

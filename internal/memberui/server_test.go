@@ -342,3 +342,114 @@ func TestLogoutClearsCookie(t *testing.T) {
 		t.Error("session cookie should be cleared on logout")
 	}
 }
+
+func TestLoginPageOffersPasswordFormAndDeviceFlow(t *testing.T) {
+	s := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// GET /login also starts the device flow for the SSO section.
+		_ = json.NewEncoder(w).Encode(DeviceAuthorization{
+			DeviceCode:      "dev-code",
+			UserCode:        "WXYZ-1234",
+			VerificationURI: "http://admin/device",
+			Interval:        5,
+		})
+	})
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	// The email/password form is present (org slug + email + password → POST /login).
+	for _, want := range []string{`action="/login"`, `name="org_slug"`, `name="email"`, `name="password"`, `type="password"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("login page missing %q", want)
+		}
+	}
+	// ...alongside the device flow (user code + poller), which stays available.
+	if !strings.Contains(body, "WXYZ-1234") || !strings.Contains(body, `hx-get="/login/poll"`) {
+		t.Errorf("device flow should remain available: %q", body)
+	}
+}
+
+func TestPasswordLoginSetsCookieAndRedirectsHome(t *testing.T) {
+	s := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/auth/login" {
+			t.Errorf("path = %q, want /auth/login", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "jwt-token", TokenType: "Bearer", ExpiresIn: 3600})
+	})
+	form := url.Values{"org_slug": {"acme"}, "email": {"a@example.com"}, "password": {"supersecret"}}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, req)
+
+	// Password sign-in lands on the home/agent picker with the session cookie set.
+	if rr.Code != http.StatusSeeOther || rr.Header().Get("Location") != "/" {
+		t.Fatalf("status=%d loc=%q, want 303 /", rr.Code, rr.Header().Get("Location"))
+	}
+	if got := cookieValue(rr.Result(), sessionCookieName); got != "jwt-token" {
+		t.Errorf("session cookie = %q, want jwt-token", got)
+	}
+}
+
+func TestPasswordLoginWrongCredentialsShowsGenericError(t *testing.T) {
+	s := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/login":
+			// Generic 401 for every failure mode.
+			w.WriteHeader(http.StatusUnauthorized)
+		case "/auth/device/code":
+			// The re-rendered page restarts the device flow for its SSO section.
+			_ = json.NewEncoder(w).Encode(DeviceAuthorization{DeviceCode: "dev-code", UserCode: "WXYZ-1234", Interval: 5})
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	})
+	form := url.Values{"org_slug": {"acme"}, "email": {"a@example.com"}, "password": {"wrongpass"}}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "Invalid credentials") {
+		t.Errorf("expected generic invalid-credentials error: %q", body)
+	}
+	// No session cookie on a failed sign-in.
+	if got := cookieValue(rr.Result(), sessionCookieName); got != "" {
+		t.Errorf("session cookie set on failed login: %q", got)
+	}
+	// The org/email are echoed so the member need not retype them; the password is not.
+	if !strings.Contains(body, `value="acme"`) || !strings.Contains(body, `value="a@example.com"`) {
+		t.Errorf("form should echo org/email: %q", body)
+	}
+	if strings.Contains(body, "wrongpass") {
+		t.Errorf("password must not be echoed: %q", body)
+	}
+}
+
+func TestPasswordLoginMissingFields(t *testing.T) {
+	s := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/login" {
+			t.Error("control plane login should not be called with missing fields")
+		}
+		// The re-rendered page still starts the device flow for its SSO section.
+		_ = json.NewEncoder(w).Encode(DeviceAuthorization{DeviceCode: "dev-code", UserCode: "WXYZ-1234", Interval: 5})
+	})
+	form := url.Values{"org_slug": {"acme"}, "email": {""}, "password": {""}}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "Enter your organization, email, and password.") {
+		t.Errorf("expected missing-fields prompt: %q", rr.Body.String())
+	}
+}

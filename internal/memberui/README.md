@@ -20,12 +20,23 @@ native webview window.
 
 ## What it does
 
-- **Sign in (device flow, RFC 8628).** `GET /login` calls
-  `POST /auth/device/code`, shows the `user_code` and a verification link, and
-  stashes the `device_code` in a transient HttpOnly cookie. An HTMX poller hits
-  `GET /login/poll`, which calls `POST /auth/device/token`; on approval the
-  minted control-plane session JWT is stored in a secure, HttpOnly cookie and
-  HTMX navigates to the home page.
+- **Sign in (email/password, primary local path — ADR-0008 §5).** `GET /login`
+  leads with a password form (**org slug + email + password**). Submitting it
+  `POST`s to `/login`, which calls the client's `Login` → `POST /auth/login`;
+  on success the minted session JWT is stored in the same secure, HttpOnly
+  `dd_member_session` cookie and the member is redirected to the home/agent
+  picker. Every failure — unknown org, unknown email, wrong password, inactive
+  member — is the control plane's single generic `401`, surfaced as one readable
+  "invalid credentials" message that reveals nothing about which field was wrong
+  (the org/email are echoed back so they need not be retyped; the password is
+  not).
+- **Sign in (device flow, RFC 8628 — secondary, for OIDC/SSO orgs).** The login
+  page also starts the device flow: `GET /login` calls `POST /auth/device/code`,
+  shows the `user_code` and a verification link, and stashes the `device_code`
+  in a transient HttpOnly cookie. An HTMX poller hits `GET /login/poll`, which
+  calls `POST /auth/device/token`; on approval the minted control-plane session
+  JWT is stored in the same secure, HttpOnly cookie and HTMX navigates to the
+  home page.
 - **Agent picker (chat-first).** `GET /` is the landing surface: the agents the
   member may launch (prefers `GET /me/agents`, falls back to `GET /agents`),
   over the prior conversations they can reopen. The experience is "pick an agent
