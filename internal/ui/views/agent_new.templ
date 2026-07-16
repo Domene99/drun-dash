@@ -6,8 +6,9 @@ import "github.com/Domene99/drun-dash/internal/uikit"
 // (POST /agents) and publishes its first immutable version (POST
 // /agents/{id}/versions) in one submit. Creating agents requires agents.manage;
 // without it the form is replaced with a permission notice. A note reminds the
-// operator that running the agent also needs a pinned model endpoint. Field
-// values echo back on a failed submit.
+// operator that running the agent also needs a pinned model endpoint, and that
+// the selected policy — not this form — governs tools, network, and fan-out.
+// Field values echo back on a failed submit.
 templ AgentNew(data AgentNewData) {
 	@Page(data.Chrome) {
 		@uikit.PageHeader(uikit.PageHeaderConfig{
@@ -31,37 +32,17 @@ templ AgentNew(data AgentNewData) {
 					Creating an agent here registers it and publishes version 1. To actually run it, pin a model endpoint (with an API key on file) and a policy below. Manage endpoints on the Endpoints page and policies on the Policies page.
 				}
 				<form method="post" action="/agents">
-					@uikit.Field(uikit.FieldConfig{Label: "Name", For: "agent-name", Required: true}) {
-						@uikit.Input(uikit.InputConfig{ID: "agent-name", Name: "name", Value: data.Name, Placeholder: "e.g. Release Bot", Attrs: templ.Attributes{"required": true, "autofocus": true}})
-					}
-					@uikit.Field(uikit.FieldConfig{Label: "Description", For: "agent-description"}) {
-						@uikit.Textarea(uikit.TextareaConfig{ID: "agent-description", Name: "description", Value: data.Description, Rows: 2, Placeholder: "What this agent does."})
-					}
-					@uikit.Field(uikit.FieldConfig{Label: "System prompt", For: "agent-system-prompt", Required: true, Help: "Anchors the agent's behaviour. The core of the version 1 manifest."}) {
-						@uikit.Textarea(uikit.TextareaConfig{ID: "agent-system-prompt", Name: "system_prompt", Value: data.SystemPrompt, Rows: 6, Placeholder: "You are ...", Attrs: templ.Attributes{"required": true}})
-					}
-					@uikit.Field(uikit.FieldConfig{Label: "Allowed tools", For: "agent-allowed-tools", Help: "Tool identifiers the agent may invoke, one per line or comma-separated. Leave empty to grant no tools."}) {
-						@uikit.Textarea(uikit.TextareaConfig{ID: "agent-allowed-tools", Name: "allowed_tools", Value: data.AllowedTools, Rows: 3, Placeholder: "search\nfetch"})
-					}
-					@uikit.Field(uikit.FieldConfig{Label: "Fan-out ceiling", For: "agent-fan-out", Help: "Maximum concurrent sub-agents a session on this version may launch. 0 disables fan-out."}) {
-						@uikit.Input(uikit.InputConfig{ID: "agent-fan-out", Name: "fan_out_ceiling", Type: "number", Value: data.FanOutCeiling, Attrs: templ.Attributes{"min": "0", "step": "1"}})
-					}
-					@uikit.Field(uikit.FieldConfig{Label: "Default policy", For: "agent-policy", Help: "Optional. The policy boundary sessions for this agent run under; its latest version is pinned to this agent's version 1."}) {
-						@uikit.Select(uikit.SelectConfig{ID: "agent-policy", Name: "default_policy_id"}) {
-							<option value="" selected?={ data.PolicyID == "" }>No policy</option>
-							for _, p := range data.Policies {
-								<option value={ p.ID } selected?={ p.ID == data.PolicyID }>{ p.Name }</option>
-							}
-						}
-					}
-					@uikit.Field(uikit.FieldConfig{Label: "Model endpoint", For: "agent-endpoint", Help: "Optional but required to run. Pins the upstream endpoint (and its sealed key) this agent's version 1 calls."}) {
-						@uikit.Select(uikit.SelectConfig{ID: "agent-endpoint", Name: "endpoint_id"}) {
-							<option value="" selected?={ data.EndpointID == "" }>No endpoint</option>
-							for _, e := range data.Endpoints {
-								<option value={ e.ID } selected?={ e.ID == data.EndpointID }>{ e.Name }</option>
-							}
-						}
-					}
+					@agentFormFields(agentFormValues{
+						Name:         data.Name,
+						Description:  data.Description,
+						SystemPrompt: data.SystemPrompt,
+						Policies:     data.Policies,
+						PolicyID:     data.PolicyID,
+						Endpoints:    data.Endpoints,
+						EndpointID:   data.EndpointID,
+						SystemPromptRequired: true,
+						PromptHelp:           "Anchors the agent's behaviour. The core of the version 1 manifest.",
+					})
 					<div class="uk-row-actions">
 						@uikit.ButtonLink(uikit.ButtonLinkConfig{Variant: uikit.ButtonSecondary, Href: "/agents"}) {
 							Cancel
@@ -74,4 +55,64 @@ templ AgentNew(data AgentNewData) {
 			}
 		}
 	}
+}
+
+// agentFormValues carries the shared agent-form field state so the create and
+// edit forms render an identical set of controls (name, description, system
+// prompt, policy, endpoint). SystemPromptRequired marks the field required (v1
+// create) versus optional (edit, where a blank prompt skips publishing a new
+// version). PromptHelp lets each caller tailor the system-prompt help text.
+type agentFormValues struct {
+	Name                 string
+	Description          string
+	SystemPrompt         string
+	SystemPromptRequired bool
+	PromptHelp           string
+	Policies             []PolicyOption
+	PolicyID             string
+	Endpoints            []EndpointOption
+	EndpointID           string
+}
+
+// agentFormFields renders the shared agent form controls. The boundary
+// (tools/network/fan-out) is deliberately absent: under policy-centric access
+// (ADR-0010) the selected policy governs it, so the form notes that and collects
+// only identity + system prompt + policy + endpoint.
+templ agentFormFields(v agentFormValues) {
+	@uikit.Field(uikit.FieldConfig{Label: "Name", For: "agent-name", Required: true}) {
+		@uikit.Input(uikit.InputConfig{ID: "agent-name", Name: "name", Value: v.Name, Placeholder: "e.g. Release Bot", Attrs: templ.Attributes{"required": true, "autofocus": true}})
+	}
+	@uikit.Field(uikit.FieldConfig{Label: "Description", For: "agent-description"}) {
+		@uikit.Textarea(uikit.TextareaConfig{ID: "agent-description", Name: "description", Value: v.Description, Rows: 2, Placeholder: "What this agent does."})
+	}
+	@uikit.Field(uikit.FieldConfig{Label: "System prompt", For: "agent-system-prompt", Required: v.SystemPromptRequired, Help: v.PromptHelp}) {
+		@uikit.Textarea(uikit.TextareaConfig{ID: "agent-system-prompt", Name: "system_prompt", Value: v.SystemPrompt, Rows: 6, Placeholder: "You are ...", Attrs: promptAttrs(v.SystemPromptRequired)})
+	}
+	@uikit.Field(uikit.FieldConfig{Label: "Default policy", For: "agent-policy", Help: "Optional. The policy boundary sessions for this agent run under; its latest version is pinned to the published version."}) {
+		@uikit.Select(uikit.SelectConfig{ID: "agent-policy", Name: "default_policy_id"}) {
+			<option value="" selected?={ v.PolicyID == "" }>No policy</option>
+			for _, p := range v.Policies {
+				<option value={ p.ID } selected?={ p.ID == v.PolicyID }>{ p.Name }</option>
+			}
+		}
+	}
+	@uikit.Field(uikit.FieldConfig{Label: "Model endpoint", For: "agent-endpoint", Help: "Optional but required to run. Pins the upstream endpoint (and its sealed key) the published version calls."}) {
+		@uikit.Select(uikit.SelectConfig{ID: "agent-endpoint", Name: "endpoint_id"}) {
+			<option value="" selected?={ v.EndpointID == "" }>No endpoint</option>
+			for _, e := range v.Endpoints {
+				<option value={ e.ID } selected?={ e.ID == v.EndpointID }>{ e.Name }</option>
+			}
+		}
+	}
+	<p class="uk-muted">Tools, network, and concurrency are governed by the selected policy.</p>
+}
+
+// promptAttrs marks the system-prompt textarea required only when the caller
+// asks (version-1 create); the edit form leaves it optional so a blank prompt
+// simply skips publishing a new version.
+func promptAttrs(required bool) templ.Attributes {
+	if required {
+		return templ.Attributes{"required": true}
+	}
+	return templ.Attributes{}
 }

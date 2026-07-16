@@ -1,0 +1,57 @@
+package views
+
+import "github.com/Domene99/drun-dash/internal/uikit"
+
+// AgentEdit renders the edit-agent form (/agents/{id}/edit). It updates the
+// agent's identity (name/description, PATCH /agents/{id}) and, when a system
+// prompt is supplied, publishes a new immutable version pinning the selected
+// policy + endpoint (POST /agents/{id}/versions). Editing requires agents.manage;
+// without it the form is replaced with a permission notice. As on the create
+// form, the boundary (tools/network/fan-out) is governed by the selected policy,
+// not collected here. Field values echo back on a failed submit.
+templ AgentEdit(data AgentEditData) {
+	@Page(data.Chrome) {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       "Edit agent",
+			Description: "Update the agent's identity, and optionally publish a new version.",
+		})
+		if data.NoAccess {
+			@uikit.Card(uikit.CardConfig{}) {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantWarning, Title: "No access"}) {
+					Editing agents requires the agents.manage permission, which your account does not have.
+				}
+			}
+		} else {
+			@uikit.Card(uikit.CardConfig{}) {
+				if data.Error != "" {
+					@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+						{ data.Error }
+					}
+				}
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantInfo, Title: "Publishing a new version"}) {
+					Name and description save immediately. Versions are immutable, so leave the system prompt blank to only rename; fill it in to publish a new version pinning the selected policy and endpoint.
+				}
+				<form method="post" action={ templ.SafeURL(agentEditPath(data.ID)) }>
+					@agentFormFields(agentFormValues{
+						Name:         data.Name,
+						Description:  data.Description,
+						SystemPrompt: data.SystemPrompt,
+						Policies:     data.Policies,
+						PolicyID:     data.PolicyID,
+						Endpoints:    data.Endpoints,
+						EndpointID:   data.EndpointID,
+						PromptHelp:   "Leave blank to keep the current version. Provide a prompt to publish a new immutable version.",
+					})
+					<div class="uk-row-actions">
+						@uikit.ButtonLink(uikit.ButtonLinkConfig{Variant: uikit.ButtonSecondary, Href: agentDetailPath(data.ID)}) {
+							Cancel
+						}
+						@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
+							Save changes
+						}
+					</div>
+				</form>
+			}
+		}
+	}
+}

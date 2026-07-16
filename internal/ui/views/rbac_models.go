@@ -230,6 +230,11 @@ func agentDetailPath(agentID string) string {
 	return "/agents/" + agentID
 }
 
+// agentEditPath is the edit-agent form URL for an agent id.
+func agentEditPath(agentID string) string {
+	return "/agents/" + agentID + "/edit"
+}
+
 // policyDetailPath is the detail-view URL for a policy id.
 func policyDetailPath(policyID string) string {
 	return "/policies/" + policyID
@@ -244,13 +249,26 @@ func policyRolesPath(policyID string) string {
 // id so the detail page's Edit control opens the matching dialog.
 func policyRolesModalID(policyID string) string { return "policy-roles-" + policyID }
 
-// roleEditModalID / roleDeleteModalID derive the per-row modal element ids so a
-// row's Edit/Delete controls open the matching dialog.
+// roleEditModalID / roleDeleteModalID / roleViewModalID derive the per-row modal
+// element ids so a row's Edit/Delete (custom) or View-permissions (built-in)
+// control opens the matching dialog.
 func roleEditModalID(roleID string) string   { return "role-edit-" + roleID }
 func roleDeleteModalID(roleID string) string { return "role-delete-" + roleID }
+func roleViewModalID(roleID string) string   { return "role-view-" + roleID }
 
 // memberRolesModalID derives the per-row assign-roles modal element id.
 func memberRolesModalID(memberID string) string { return "member-roles-" + memberID }
+
+// agentListClass is the class for the role form's per-agent checklist container.
+// When the role grants all agents the individual checks are moot, so the
+// container is greyed (matching the checked+disabled state the toggle script
+// keeps in sync live).
+func agentListClass(allAgents bool) string {
+	if allAgents {
+		return "uk-agent-checklist uk-agent-checklist-disabled"
+	}
+	return "uk-agent-checklist"
+}
 
 // contains reports whether s is present in list, for preselecting a checklist
 // or multiselect option in the role/member editors.

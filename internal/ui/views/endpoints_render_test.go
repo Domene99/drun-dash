@@ -78,19 +78,24 @@ func TestRenderPoliciesCreateGating(t *testing.T) {
 
 func TestRenderAgentNewPinsEndpointAndPolicy(t *testing.T) {
 	body := render(t, AgentNew(AgentNewData{
-		Chrome:        sampleChrome("agents"),
-		FanOutCeiling: "0",
-		Policies:      []PolicyOption{{ID: "p1", Name: "Prod"}},
-		Endpoints:     []EndpointOption{{ID: "e1", Name: "Anthropic prod (anthropic)"}},
-		PolicyID:      "p1",
-		EndpointID:    "e1",
+		Chrome:     sampleChrome("agents"),
+		Policies:   []PolicyOption{{ID: "p1", Name: "Prod"}},
+		Endpoints:  []EndpointOption{{ID: "e1", Name: "Anthropic prod (anthropic)"}},
+		PolicyID:   "p1",
+		EndpointID: "e1",
 	}))
 	mustContain(t, body,
 		"Model endpoint", `name="endpoint_id"`, "Anthropic prod (anthropic)",
 		"Default policy", `name="default_policy_id"`, "Prod",
+		// The policy owns tools/network/fan-out (ADR-0010); the form says so.
+		"Tools, network, and concurrency are governed by the selected policy.",
 	)
 	// The selected policy and endpoint are echoed back as the chosen options.
 	if !strings.Contains(body, `value="p1" selected`) || !strings.Contains(body, `value="e1" selected`) {
 		t.Errorf("agent form must preselect the chosen policy and endpoint:\n%s", body)
+	}
+	// Tools and fan-out are no longer collected — the policy governs them.
+	if strings.Contains(body, `name="allowed_tools"`) || strings.Contains(body, `name="fan_out_ceiling"`) {
+		t.Errorf("agent form must not collect tools or fan-out:\n%s", body)
 	}
 }

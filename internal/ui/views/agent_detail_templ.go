@@ -776,8 +776,8 @@ func AgentDetail(data AgentDetailData) templ.Component {
 }
 
 // agentDetailActions renders the detail page-header actions: a Back link and,
-// for callers who can manage agents, a disabled Edit placeholder pointing at the
-// next-batch editing surface.
+// for callers who can manage agents (agents.manage), an Edit link to the
+// edit-agent form.
 func agentDetailActions(data AgentDetailData) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -844,7 +844,7 @@ func agentDetailActions(data AgentDetailData) templ.Component {
 				}
 				return templ_7745c5c3_Err
 			})
-			templ_7745c5c3_Err = uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Disabled: true, Attrs: templ.Attributes{"title": "Editing agents arrives in a later batch."}}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var37), templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = uikit.ButtonLink(uikit.ButtonLinkConfig{Variant: uikit.ButtonPrimary, Href: agentEditPath(data.ID)}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var37), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

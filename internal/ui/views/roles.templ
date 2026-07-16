@@ -4,10 +4,12 @@ import "github.com/Domene99/drun-dash/internal/uikit"
 
 // Roles renders the role catalog: the built-in roles (immutable, read-only) and
 // any custom roles, each by name + description + permission count + agent-access
-// summary + a type badge. When the caller holds roles.manage the page offers a
-// New-role dialog and per-row Edit/Delete controls for custom roles; built-in
-// roles never get those controls (ADR-0006 §1). Without roles.manage the page
-// shows a view-only notice, since the control plane gates the roles API on it.
+// summary + a type badge. Every row offers a way to see what it grants: custom
+// roles (with roles.manage) get an editable form + Delete; built-in roles get a
+// read-only "View permissions" panel so an admin can read what Owner/Admin/
+// Auditor/Member grant even though they cannot change them (ADR-0006 §1). Without
+// roles.manage the page shows a view-only notice, since the control plane gates
+// the roles API on it.
 templ Roles(data RolesData) {
 	@Page(data.Chrome) {
 		@uikit.PageHeader(uikit.PageHeaderConfig{
@@ -60,18 +62,22 @@ templ Roles(data RolesData) {
 										}
 									</td>
 									<td>
-										if data.CanManage && !role.Builtin {
-											<div class="uk-row-actions">
+										<div class="uk-row-actions">
+											if role.Builtin {
+												@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Small: true, Attrs: templ.Attributes{"data-uk-modal-open": roleViewModalID(role.ID)}}) {
+													View permissions
+												}
+											} else if data.CanManage {
 												@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Small: true, Attrs: templ.Attributes{"data-uk-modal-open": roleEditModalID(role.ID)}}) {
 													Edit
 												}
 												@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonDanger, Small: true, Attrs: templ.Attributes{"data-uk-modal-open": roleDeleteModalID(role.ID)}}) {
 													Delete
 												}
-											</div>
-										} else {
-											<span class="uk-muted">—</span>
-										}
+											} else {
+												<span class="uk-muted">—</span>
+											}
+										</div>
 									</td>
 								</tr>
 							}
@@ -83,15 +89,20 @@ templ Roles(data RolesData) {
 				@uikit.Modal(uikit.ModalConfig{ID: "role-create", Title: "New role"}) {
 					@roleForm("role-create", rolePath, "Create role", RoleView{}, data.Permissions, data.Agents)
 				}
-				for _, role := range data.Roles {
-					if !role.Builtin {
-						@uikit.Modal(uikit.ModalConfig{ID: roleEditModalID(role.ID), Title: "Edit role — " + role.Name}) {
-							@roleForm(roleEditModalID(role.ID), roleUpdatePath(role.ID), "Save changes", role, data.Permissions, data.Agents)
-						}
-						@roleDeleteModal(role)
+			}
+			for _, role := range data.Roles {
+				if role.Builtin {
+					@uikit.Modal(uikit.ModalConfig{ID: roleViewModalID(role.ID), Title: "Permissions — " + role.Name}) {
+						@roleView(role, data.Permissions, data.Agents)
 					}
+				} else if data.CanManage {
+					@uikit.Modal(uikit.ModalConfig{ID: roleEditModalID(role.ID), Title: "Edit role — " + role.Name}) {
+						@roleForm(roleEditModalID(role.ID), roleUpdatePath(role.ID), "Save changes", role, data.Permissions, data.Agents)
+					}
+					@roleDeleteModal(role)
 				}
 			}
+			@allAgentsToggleScript()
 		}
 	}
 }
@@ -111,6 +122,12 @@ templ rolesHeaderAction(data RolesData) {
 // a per-agent checklist). It posts to action as a full-page form; role carries
 // the current values so the edit form is pre-filled. idPrefix keys the field ids
 // so multiple forms on the page keep distinct labels.
+//
+// When "all agents" is on, the per-agent checklist is server-rendered checked and
+// disabled (greyed): an all-agents role implies every agent, so the individual
+// selections are moot. A tiny inline script (allAgentsToggleScript) keeps that in
+// sync when the toggle changes live; with JS off the server-rendered state is
+// already correct.
 templ roleForm(idPrefix, action, submitLabel string, role RoleView, perms []PermissionOption, agents []AgentOption) {
 	<form method="post" action={ templ.SafeURL(action) }>
 		@uikit.Field(uikit.FieldConfig{Label: "Name", For: idPrefix + "-name", Required: true}) {
@@ -125,13 +142,15 @@ templ roleForm(idPrefix, action, submitLabel string, role RoleView, perms []Perm
 			}
 		}
 		@uikit.Field(uikit.FieldConfig{Label: "Agent access", Help: "Which agents members holding this role may run."}) {
-			@uikit.Check(uikit.CheckConfig{Name: "all_agents", Value: "on", Label: "Grant access to all agents", Checked: role.AllAgents})
+			@uikit.Check(uikit.CheckConfig{ID: idPrefix + "-all-agents", Name: "all_agents", Value: "on", Label: "Grant access to all agents", Checked: role.AllAgents, Attrs: templ.Attributes{"data-all-agents-toggle": "1", "data-agent-list": idPrefix + "-agent-list"}})
 			if len(agents) == 0 {
 				<p class="uk-muted">No agents in the catalog yet.</p>
 			} else {
-				for _, a := range agents {
-					@uikit.Check(uikit.CheckConfig{Name: "agents", Value: a.ID, Label: a.Name, Checked: contains(role.AgentIDs, a.ID)})
-				}
+				<div id={ idPrefix + "-agent-list" } class={ agentListClass(role.AllAgents) }>
+					for _, a := range agents {
+						@uikit.Check(uikit.CheckConfig{Name: "agents", Value: a.ID, Label: a.Name, Checked: role.AllAgents || contains(role.AgentIDs, a.ID), Disabled: role.AllAgents})
+					}
+				</div>
 			}
 		}
 		<div class="uk-modal-footer">
@@ -143,6 +162,69 @@ templ roleForm(idPrefix, action, submitLabel string, role RoleView, perms []Perm
 			}
 		</div>
 	</form>
+}
+
+// roleView renders a built-in role's permissions and agent access read-only:
+// disabled checkboxes checked where the role grants the verb/agent, so an admin
+// can see exactly what Owner/Admin/Auditor/Member grant without being able to
+// change them (built-in roles are immutable, ADR-0006 §1). It is a panel, not a
+// form — its only action is Close.
+templ roleView(role RoleView, perms []PermissionOption, agents []AgentOption) {
+	@uikit.Field(uikit.FieldConfig{Label: "Description"}) {
+		<p>{ orDash(role.Description) }</p>
+	}
+	@uikit.Field(uikit.FieldConfig{Label: "Permissions", Help: "Capabilities this built-in role grants. Built-in roles are read-only."}) {
+		for _, p := range perms {
+			@uikit.Check(uikit.CheckConfig{Name: "permissions", Value: p.Key, Label: p.Key + " — " + p.Description, Checked: contains(role.PermissionKeys, p.Key), Disabled: true})
+		}
+	}
+	@uikit.Field(uikit.FieldConfig{Label: "Agent access", Help: "Which agents members holding this role may run."}) {
+		@uikit.Check(uikit.CheckConfig{Name: "all_agents", Value: "on", Label: "Grant access to all agents", Checked: role.AllAgents, Disabled: true})
+		if len(agents) == 0 {
+			<p class="uk-muted">No agents in the catalog yet.</p>
+		} else {
+			<div class={ agentListClass(role.AllAgents) }>
+				for _, a := range agents {
+					@uikit.Check(uikit.CheckConfig{Name: "agents", Value: a.ID, Label: a.Name, Checked: role.AllAgents || contains(role.AgentIDs, a.ID), Disabled: true})
+				}
+			</div>
+		}
+	}
+	<div class="uk-modal-footer">
+		@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Attrs: templ.Attributes{"data-uk-modal-close": true}}) {
+			Close
+		}
+	</div>
+}
+
+// allAgentsToggleScript is a minimal inline vanilla script (no framework) that
+// keeps each role form's per-agent checklist in sync with its "all agents"
+// toggle: turning it on checks and disables (greys) every agent checkbox in the
+// matching list; turning it off re-enables them for individual selection. The
+// server already renders the correct initial state, so the page degrades
+// gracefully with JS off.
+templ allAgentsToggleScript() {
+	<style>
+		.uk-agent-checklist-disabled { opacity: 0.55; }
+	</style>
+	<script type="text/javascript">
+		(function () {
+			function syncAgents(toggle) {
+				var list = document.getElementById(toggle.getAttribute("data-agent-list"));
+				if (!list) return;
+				var checks = list.querySelectorAll('input[type="checkbox"]');
+				for (var i = 0; i < checks.length; i++) {
+					checks[i].disabled = toggle.checked;
+					if (toggle.checked) checks[i].checked = true;
+				}
+				list.classList.toggle("uk-agent-checklist-disabled", toggle.checked);
+			}
+			var toggles = document.querySelectorAll("input[data-all-agents-toggle]");
+			for (var i = 0; i < toggles.length; i++) {
+				toggles[i].addEventListener("change", function (e) { syncAgents(e.target); });
+			}
+		})();
+	</script>
 }
 
 // roleDeleteModal renders the per-row delete confirmation for a custom role. The
