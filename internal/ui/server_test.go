@@ -9,13 +9,28 @@ import (
 	"testing"
 )
 
-// mockControlPlane returns an httptest server answering every dashboard and
+// roundTripFunc adapts a function to an http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// mockClient returns an *http.Client that dispatches every request to h through
+// an in-memory recorder — no socket is bound, so these page tests run even
+// where listening on a port is denied (the drun sandbox). The control-plane
+// base URL is irrelevant since the transport ignores the host.
+func mockClient(h http.Handler) *http.Client {
+	return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec.Result(), nil
+	})}
+}
+
+// controlPlaneMux returns a handler answering every dashboard and
 // governance-page endpoint with canned data. When status is not 200 every
 // endpoint responds with that status and a flat Error body, simulating a token
 // the control plane rejects everywhere (not just on /auth/whoami).
-func mockControlPlane(t *testing.T, status int) *httptest.Server {
-	t.Helper()
-
+func controlPlaneMux(status int) http.Handler {
 	// rejected writes the error response and reports true when status models a
 	// rejected token, so each handler can bail out uniformly.
 	rejected := func(w http.ResponseWriter) bool {
@@ -32,7 +47,7 @@ func mockControlPlane(t *testing.T, status int) *httptest.Server {
 		if rejected(w) {
 			return
 		}
-		_, _ = w.Write([]byte(`{"subject":"user-1","organization_id":"org-1","roles":["admin"]}`))
+		_, _ = w.Write([]byte(`{"subject":"user-1","organization_id":"org-1","email":"admin@example.com","roles":["admin"]}`))
 	})
 	mux.HandleFunc("/agents", func(w http.ResponseWriter, r *http.Request) {
 		if rejected(w) {
@@ -94,15 +109,31 @@ func mockControlPlane(t *testing.T, status int) *httptest.Server {
 			`{"id":"ap1","session_id":"s1","action":"spawn subagent","status":%q,"decided_by":"user-1","created_at":"2026-07-01T00:00:00Z"}`, st)))
 	})
 
-	srv := httptest.NewServer(mux)
+	return mux
+}
+
+// mockControlPlane serves [controlPlaneMux] over a real httptest server, for the
+// OIDC tests that need a control-plane base URL (oidc_test.go).
+func mockControlPlane(t *testing.T, status int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(controlPlaneMux(status))
 	t.Cleanup(srv.Close)
 	return srv
 }
 
-// newServer builds an admin-ui Server whose client targets base.
+// newServer builds an admin-ui Server whose client targets base. Tests that
+// never call the control plane (login, logout, healthz, assets, unauthenticated
+// redirects) pass an unreachable base.
 func newServer(t *testing.T, base string) *Server {
 	t.Helper()
 	return New(NewClient(base, nil), nil)
+}
+
+// newServerCP builds an admin-ui Server whose client dispatches to h in memory,
+// so control-plane-backed page tests run without binding a socket.
+func newServerCP(t *testing.T, h http.Handler) *Server {
+	t.Helper()
+	return New(NewClient("http://control-plane.invalid", mockClient(h)), nil)
 }
 
 // authedGet issues a GET to path carrying a valid session cookie.
@@ -130,6 +161,23 @@ func TestUnauthenticatedRedirectsToLogin(t *testing.T) {
 		if loc := rec.Header().Get("Location"); loc != "/login" {
 			t.Errorf("%s Location = %q, want /login", path, loc)
 		}
+	}
+}
+
+func TestUikitAssetsServed(t *testing.T) {
+	s := newServer(t, "http://control-plane.invalid")
+
+	// The shared design-system stylesheet is served publicly (no auth) so pages
+	// can link it; it carries a CSS content type.
+	req := httptest.NewRequest(http.MethodGet, "/uikit/uikit.css", nil)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/css") {
+		t.Errorf("stylesheet Content-Type = %q, want text/css", ct)
 	}
 }
 
@@ -241,8 +289,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestDashboardRendersWithCookie(t *testing.T) {
-	cp := mockControlPlane(t, http.StatusOK)
-	s := newServer(t, cp.URL)
+	s := newServerCP(t, controlPlaneMux(http.StatusOK))
 
 	rec := authedGet(t, s, "/")
 
@@ -250,16 +297,21 @@ func TestDashboardRendersWithCookie(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"user-1", "org-1", "Planner", "s1", "12.50 USD", "Live overview"} {
+	// The Overview shows readable agent names + the spend metric; the identity
+	// (subject/org/email) lives in the top-bar user menu, not as the page.
+	for _, want := range []string{"admin@example.com", "user-1", "org-1", "Planner", "s1", "12.50 USD", "Overview", "Recent sessions"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard missing %q", want)
 		}
 	}
+	// The old JWT-claims <dl> dump is gone.
+	if strings.Contains(body, "<dl>") {
+		t.Errorf("overview still renders a claims <dl> dump")
+	}
 }
 
 func TestDashboardUnauthorizedRedirects(t *testing.T) {
-	cp := mockControlPlane(t, http.StatusUnauthorized)
-	s := newServer(t, cp.URL)
+	s := newServerCP(t, controlPlaneMux(http.StatusUnauthorized))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "stale-token"})
@@ -284,8 +336,7 @@ func TestDashboardUnauthorizedRedirects(t *testing.T) {
 }
 
 func TestSummaryFragmentRenders(t *testing.T) {
-	cp := mockControlPlane(t, http.StatusOK)
-	s := newServer(t, cp.URL)
+	s := newServerCP(t, controlPlaneMux(http.StatusOK))
 
 	rec := authedGet(t, s, "/fragments/summary")
 
@@ -299,8 +350,7 @@ func TestSummaryFragmentRenders(t *testing.T) {
 }
 
 func TestSummaryFragmentUnauthorizedUsesHXRedirect(t *testing.T) {
-	cp := mockControlPlane(t, http.StatusUnauthorized)
-	s := newServer(t, cp.URL)
+	s := newServerCP(t, controlPlaneMux(http.StatusUnauthorized))
 
 	req := httptest.NewRequest(http.MethodGet, "/fragments/summary", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "stale"})
@@ -316,8 +366,7 @@ func TestSummaryFragmentUnauthorizedUsesHXRedirect(t *testing.T) {
 }
 
 func TestSessionsPageRenders(t *testing.T) {
-	cp := mockControlPlane(t, http.StatusOK)
-	s := newServer(t, cp.URL)
+	s := newServerCP(t, controlPlaneMux(http.StatusOK))
 
 	rec := authedGet(t, s, "/sessions")
 
@@ -325,7 +374,9 @@ func TestSessionsPageRenders(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Sessions", "Fan-out", "s1", "a1", "running", ">4<", "Trajectory", `href="/sessions/s1/trajectory"`, "view trajectory"} {
+	// The agent name (not its UUID) is the primary label; the session id is a
+	// copyable secondary chip; each row links into the trajectory viewer.
+	for _, want := range []string{"Sessions", "Fan-out", "s1", "Planner", "running", ">4<", "View trajectory", `href="/sessions/s1/trajectory"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("sessions page missing %q:\n%s", want, body)
 		}
@@ -333,8 +384,7 @@ func TestSessionsPageRenders(t *testing.T) {
 }
 
 func TestSpendPageRenders(t *testing.T) {
-	cp := mockControlPlane(t, http.StatusOK)
-	s := newServer(t, cp.URL)
+	s := newServerCP(t, controlPlaneMux(http.StatusOK))
 
 	rec := authedGet(t, s, "/spend")
 
@@ -351,8 +401,7 @@ func TestSpendPageRenders(t *testing.T) {
 }
 
 func TestApprovalsPageRenders(t *testing.T) {
-	cp := mockControlPlane(t, http.StatusOK)
-	s := newServer(t, cp.URL)
+	s := newServerCP(t, controlPlaneMux(http.StatusOK))
 
 	rec := authedGet(t, s, "/approvals")
 
@@ -373,8 +422,7 @@ func TestApprovalsPageRenders(t *testing.T) {
 }
 
 func TestApprovalDecisionApprovePostsAndRerenders(t *testing.T) {
-	cp := mockControlPlane(t, http.StatusOK)
-	s := newServer(t, cp.URL)
+	s := newServerCP(t, controlPlaneMux(http.StatusOK))
 
 	req := httptest.NewRequest(http.MethodPost, "/approvals/ap1/decision", strings.NewReader("decision=approve"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -397,8 +445,7 @@ func TestApprovalDecisionApprovePostsAndRerenders(t *testing.T) {
 }
 
 func TestApprovalDecisionInvalid(t *testing.T) {
-	cp := mockControlPlane(t, http.StatusOK)
-	s := newServer(t, cp.URL)
+	s := newServerCP(t, controlPlaneMux(http.StatusOK))
 
 	req := httptest.NewRequest(http.MethodPost, "/approvals/ap1/decision", strings.NewReader("decision=maybe"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -415,8 +462,7 @@ func TestApprovalDecisionInvalid(t *testing.T) {
 }
 
 func TestApprovalDecisionUnauthorizedUsesHXRedirect(t *testing.T) {
-	cp := mockControlPlane(t, http.StatusUnauthorized)
-	s := newServer(t, cp.URL)
+	s := newServerCP(t, controlPlaneMux(http.StatusUnauthorized))
 
 	req := httptest.NewRequest(http.MethodPost, "/approvals/ap1/decision", strings.NewReader("decision=approve"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -433,8 +479,7 @@ func TestApprovalDecisionUnauthorizedUsesHXRedirect(t *testing.T) {
 }
 
 func TestTrajectoryPageRendersTree(t *testing.T) {
-	cp := mockControlPlane(t, http.StatusOK)
-	s := newServer(t, cp.URL)
+	s := newServerCP(t, controlPlaneMux(http.StatusOK))
 
 	rec := authedGet(t, s, "/sessions/s1/trajectory")
 
@@ -442,10 +487,11 @@ func TestTrajectoryPageRendersTree(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	// The page renders the session id, a legend, both badges, and a field
-	// summary (payload value and structure type/size).
-	for _, want := range []string{"Trajectory", "s1", "legend", "session_start", "tool_call", "tool_result",
-		`class="badge structure"`, `class="badge payload"`, "tool_name=search", "result (object, 256B)"} {
+	// The page renders a readable heading (agent name resolved), the session id,
+	// a legend, both class badges (info for structure, danger for payload), and a
+	// field summary (payload value and structure type/size).
+	for _, want := range []string{"Trajectory", "Planner", "s1", "raw value captured", "session_start", "tool_call", "tool_result",
+		"uk-badge--info", "uk-badge--danger", "tool_name=search", "result (object, 256B)"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("trajectory page missing %q:\n%s", want, body)
 		}
@@ -459,19 +505,18 @@ func TestTrajectoryPageRendersTree(t *testing.T) {
 		t.Errorf("events out of tree order: root=%d child=%d grand=%d", iRoot, iChild, iGrand)
 	}
 	// Nested events are indented (em-dash prefix inside the indent span).
-	if !strings.Contains(body, "\u2014 ") {
+	if !strings.Contains(body, "— ") {
 		t.Errorf("nested events not indented:\n%s", body)
 	}
 }
 
 func TestTrajectoryPageSurfacesErrorReadably(t *testing.T) {
 	// A control-plane 404 (unknown session) must render a readable message.
-	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"code":"not_found","message":"session not found"}`))
-	}))
-	t.Cleanup(cp.Close)
-	s := newServer(t, cp.URL)
+	})
+	s := newServerCP(t, h)
 
 	rec := authedGet(t, s, "/sessions/missing/trajectory")
 
@@ -486,12 +531,11 @@ func TestTrajectoryPageSurfacesErrorReadably(t *testing.T) {
 
 func TestSpendPageSurfacesErrorReadably(t *testing.T) {
 	// A control-plane 500 must render a readable message, not a blank page.
-	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"code":"internal_error","message":"backend down"}`))
-	}))
-	t.Cleanup(cp.Close)
-	s := newServer(t, cp.URL)
+	})
+	s := newServerCP(t, h)
 
 	rec := authedGet(t, s, "/spend")
 

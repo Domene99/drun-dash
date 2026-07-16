@@ -1,88 +1,91 @@
 package views
 
-// SpendPageData is the view model for the Spend page: the finance view. It
-// pairs the spend total and per-group breakdown with budget utilization. The
-// two sections fail independently, each carrying its own error string so one
-// degraded endpoint does not blank the page.
-type SpendPageData struct {
-	Window       string
-	Total        string
-	Groups       []SpendRow
-	SpendError   string
-	Budgets      []BudgetRow
-	BudgetsError string
-}
+import "github.com/Domene99/drun-dash/internal/uikit"
 
-// BudgetRow is one row of the budget-utilization table. Spent, Limit, and
-// Utilization are pre-formatted display strings; Over marks a budget whose
-// spend has reached or exceeded its limit so the view can flag it.
-type BudgetRow struct {
-	Name        string
-	Period      string
-	Spent       string
-	Limit       string
-	Utilization string
-	Over        bool
-}
-
-// Spend renders the finance view: total spend over the window, the per-group
-// breakdown, and configured budgets with their utilization.
+// Spend renders the finance view: the spend total over the window as a metric,
+// the per-agent breakdown, and configured budgets with their utilization (a
+// budget at or over its limit is flagged with a danger badge). The spend and
+// budgets sections fail independently, each surfacing its own inline error.
 templ Spend(data SpendPageData) {
-	@Layout("Spend") {
-		<section class="card">
-			<div class="summary-head">
-				<h1>Spend { data.Window }</h1>
-				<span class="metric-value">{ data.Total }</span>
-			</div>
+	@Page(data.Chrome) {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       "Spend",
+			Description: "Spend " + data.Window + " by agent, with budget utilization.",
+		})
+		@uikit.Card(uikit.CardConfig{Title: "Total spend " + data.Window}) {
+			@uikit.Metrics([]uikit.Metric{
+				{Label: "Total", Value: data.Total},
+			})
 			if data.SpendError != "" {
-				<p class="error" role="alert">{ data.SpendError }</p>
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+					{ data.SpendError }
+				}
 			} else if len(data.Groups) == 0 {
-				<p class="muted">No spend in this window.</p>
+				@uikit.EmptyState(uikit.EmptyStateConfig{
+					Title:   "No spend in this window",
+					Message: "Agent spend will appear here once sessions run.",
+				})
 			} else {
-				<table>
+				@uikit.Table() {
 					<thead>
-						<tr><th>Group</th><th>Amount</th><th>Tokens</th></tr>
+						<tr>
+							<th>Agent</th>
+							<th class="uk-num">Amount</th>
+							<th class="uk-num">Tokens</th>
+						</tr>
 					</thead>
 					<tbody>
 						for _, g := range data.Groups {
 							<tr>
 								<td>{ g.Key }</td>
-								<td class="num">{ g.Amount }</td>
-								<td class="num">{ g.Tokens }</td>
+								<td class="uk-num">{ g.Amount }</td>
+								<td class="uk-num">{ g.Tokens }</td>
 							</tr>
 						}
 					</tbody>
-				</table>
+				}
 			}
-		</section>
-		<section class="card">
-			<h2>Budgets</h2>
+		}
+		@uikit.Card(uikit.CardConfig{Title: "Budgets"}) {
 			if data.BudgetsError != "" {
-				<p class="error" role="alert">{ data.BudgetsError }</p>
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+					{ data.BudgetsError }
+				}
 			} else if len(data.Budgets) == 0 {
-				<p class="muted">No budgets configured.</p>
+				@uikit.EmptyState(uikit.EmptyStateConfig{
+					Title:   "No budgets configured",
+					Message: "Configured spend budgets and their utilization will appear here.",
+				})
 			} else {
-				<table>
+				@uikit.Table() {
 					<thead>
-						<tr><th>Budget</th><th>Period</th><th>Spent</th><th>Limit</th><th>Utilization</th></tr>
+						<tr>
+							<th>Budget</th>
+							<th>Period</th>
+							<th class="uk-num">Spent</th>
+							<th class="uk-num">Limit</th>
+							<th class="uk-num">Utilization</th>
+						</tr>
 					</thead>
 					<tbody>
 						for _, b := range data.Budgets {
 							<tr>
 								<td>{ b.Name }</td>
 								<td>{ b.Period }</td>
-								<td class="num">{ b.Spent }</td>
-								<td class="num">{ b.Limit }</td>
-								if b.Over {
-									<td class="num error">{ b.Utilization }</td>
-								} else {
-									<td class="num">{ b.Utilization }</td>
-								}
+								<td class="uk-num">{ b.Spent }</td>
+								<td class="uk-num">{ b.Limit }</td>
+								<td class="uk-num">
+									if b.Over {
+										@uikit.Badge(uikit.BadgeConfig{Variant: uikit.VariantDanger, Label: b.Utilization})
+									} else {
+										{ b.Utilization }
+									}
+								</td>
 							</tr>
 						}
 					</tbody>
-				</table>
+				}
 			}
-		</section>
+		}
 	}
 }

@@ -1,56 +1,59 @@
 package views
 
-// DeviceData is the view model for the CLI device-approval page. UserCode is
-// the short code the operator confirms against the one shown in their terminal.
-// Error, when non-empty, explains why the request cannot proceed. Done marks a
-// completed decision; Approved distinguishes an approval from a denial in the
-// confirmation.
-type DeviceData struct {
-	// UserCode is the device user code being confirmed.
-	UserCode string
-	// Error is shown as an alert when non-empty.
-	Error string
-	// Done reports that the decision has been recorded (renders the confirmation
-	// instead of the approve/deny form).
-	Done bool
-	// Approved is the recorded decision when Done; false means denied.
-	Approved bool
-}
+import "github.com/Domene99/drun-dash/internal/uikit"
 
 // Device renders the device-approval confirmation page that completes the CLI
-// `drun-dash login` device flow. It shows the user code so the operator can
-// confirm it matches their terminal, then approve or deny. Once a decision is
-// recorded it renders a short confirmation. The page is served only to a
-// signed-in member.
+// `drun-dash login` device flow, in the sidebar-less [Minimal] shell. It shows
+// the user code so the operator can confirm it matches their terminal, then
+// approve (primary) or deny (danger). Once a decision is recorded it renders a
+// short confirmation.
 templ Device(data DeviceData) {
-	@Layout("Approve device") {
-		<section class="card">
-			<h1>Approve device login</h1>
+	@Minimal("Approve device") {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       "Approve device login",
+			Description: "Confirm the code matches your terminal, then approve or deny.",
+		})
+		@uikit.Card(uikit.CardConfig{}) {
 			if data.Error != "" {
-				<p class="error" role="alert">{ data.Error }</p>
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+					{ data.Error }
+				}
 			}
 			if data.Done {
 				if data.Approved {
-					<p>
-						Device <code>{ data.UserCode }</code> approved. You can return to
+					@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantSuccess, Title: "Device approved"}) {
+						Device <code class="uk-mono">{ data.UserCode }</code> approved. Return to
 						your terminal — the CLI will finish signing in.
-					</p>
+					}
 				} else {
-					<p>Device request <code>{ data.UserCode }</code> denied.</p>
+					@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantNeutral, Title: "Device denied"}) {
+						Device request <code class="uk-mono">{ data.UserCode }</code> denied.
+					}
 				}
 			} else if data.UserCode != "" {
-				<p class="muted">
-					A device is requesting access to your organization. Confirm that the
-					code below matches the one shown in your terminal, then approve or
-					deny the request.
+				<p class="uk-muted">
+					A device is requesting access to your organization. Confirm the code
+					below matches the one shown in your terminal, then approve or deny.
 				</p>
-				<p class="metric-value">{ data.UserCode }</p>
-				<form method="post" action="/device" class="row-actions">
+				<p class="uk-metric-value uk-mono">{ data.UserCode }</p>
+				<form method="post" action="/device" class="uk-row-actions">
 					<input type="hidden" name="user_code" value={ data.UserCode }/>
-					<button type="submit" name="decision" value="approve">Approve</button>
-					<button type="submit" name="decision" value="deny" class="deny">Deny</button>
+					@uikit.Button(uikit.ButtonConfig{
+						Variant: uikit.ButtonPrimary,
+						Type:    "submit",
+						Attrs:   templ.Attributes{"name": "decision", "value": "approve"},
+					}) {
+						Approve
+					}
+					@uikit.Button(uikit.ButtonConfig{
+						Variant: uikit.ButtonDanger,
+						Type:    "submit",
+						Attrs:   templ.Attributes{"name": "decision", "value": "deny"},
+					}) {
+						Deny
+					}
 				</form>
 			}
-		</section>
+		}
 	}
 }

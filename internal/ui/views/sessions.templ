@@ -1,54 +1,63 @@
 package views
 
-// SessionsData is the view model for the Sessions page: the governed-session
-// table plus an optional page-level error when the control-plane call failed.
-type SessionsData struct {
-	// Error, when non-empty, replaces the table with a readable message
-	// instead of blanking the page.
-	Error string
-	// Sessions is the resolved list of rows to render.
-	Sessions []SessionDetailRow
-}
+import "github.com/Domene99/drun-dash/internal/uikit"
 
-// SessionDetailRow is one row of the Sessions page table. It carries the
-// fan-out ceiling that the compact dashboard summary omits.
-type SessionDetailRow struct {
-	ID      string
-	Agent   string
-	Status  string
-	Created string
-	FanOut  string
-}
-
-// Sessions renders the flight-recorder view: every governed session with its
-// agent, status, creation time, and fan-out ceiling.
+// Sessions renders the flight-recorder view: every governed session by agent
+// name + status badge + relative start + fan-out, with the session UUID as a
+// copyable secondary ID chip (never the primary label — ADR-0005 §4) and a link
+// into the trajectory viewer.
 templ Sessions(data SessionsData) {
-	@Layout("Sessions") {
-		<section class="card">
-			<h1>Sessions</h1>
+	@Page(data.Chrome) {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       "Sessions",
+			Description: "Governed agent sessions across your organization.",
+		})
+		@uikit.Card(uikit.CardConfig{}) {
 			if data.Error != "" {
-				<p class="error" role="alert">{ data.Error }</p>
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+					{ data.Error }
+				}
 			} else if len(data.Sessions) == 0 {
-				<p class="muted">No sessions.</p>
+				@uikit.EmptyState(uikit.EmptyStateConfig{
+					Title:   "No sessions yet",
+					Message: "Governed agent sessions will appear here once launched.",
+				})
 			} else {
-				<table>
+				@uikit.Table() {
 					<thead>
-						<tr><th>Session</th><th>Agent</th><th>Status</th><th>Created</th><th>Fan-out</th><th>Trajectory</th></tr>
+						<tr>
+							<th>Agent</th>
+							<th>Status</th>
+							<th>Started</th>
+							<th class="uk-num">Fan-out</th>
+							<th>Session</th>
+							<th></th>
+						</tr>
 					</thead>
 					<tbody>
 						for _, s := range data.Sessions {
 							<tr>
-								<td>{ s.ID }</td>
 								<td>{ s.Agent }</td>
-								<td>{ s.Status }</td>
-								<td>{ s.Created }</td>
-								<td class="num">{ s.FanOut }</td>
-								<td><a href={ "/sessions/" + s.ID + "/trajectory" }>view trajectory</a></td>
+								<td>
+									@uikit.StatusBadge(s.Status)
+								</td>
+								<td>
+									@uikit.RelativeTime(uikit.RelativeTimeConfig{Relative: s.Started.Relative, Absolute: s.Started.Absolute})
+								</td>
+								<td class="uk-num">{ s.FanOut }</td>
+								<td>
+									@uikit.IDChip(uikit.IDChipConfig{ID: s.ID, Display: shortID(s.ID)})
+								</td>
+								<td>
+									@uikit.ButtonLink(uikit.ButtonLinkConfig{Variant: uikit.ButtonGhost, Small: true, Href: trajectoryPath(s.ID)}) {
+										View trajectory
+									}
+								</td>
 							</tr>
 						}
 					</tbody>
-				</table>
+				}
 			}
-		</section>
+		}
 	}
 }
