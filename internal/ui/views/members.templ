@@ -1,0 +1,130 @@
+package views
+
+import "github.com/Domene99/drun-dash/internal/uikit"
+
+// Members renders the organization roster: each member by name/email, their
+// directly-assigned roles as badges, and an active/inactive status. When the
+// caller holds members.manage each row offers an Assign-roles dialog that
+// replaces the member's role set (PUT /members/{id}/roles). Raw ids never appear
+// as labels — the member is shown by display name or email (ADR-0005 §4).
+templ Members(data MembersData) {
+	@Page(data.Chrome) {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       "Members",
+			Description: "People in your organization and the roles assigned to them.",
+		})
+		if data.NoAccess {
+			@uikit.Card(uikit.CardConfig{}) {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantWarning, Title: "No access"}) {
+					Viewing members requires the members.manage or audit.view permission, which your account does not have.
+				}
+			}
+		} else {
+			@uikit.Card(uikit.CardConfig{}) {
+				if data.Error != "" {
+					@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+						{ data.Error }
+					}
+				}
+				if len(data.Members) == 0 {
+					@uikit.EmptyState(uikit.EmptyStateConfig{
+						Title:   "No members yet",
+						Message: "Members appear here once they sign in to your organization.",
+					})
+				} else {
+					@uikit.Table() {
+						<thead>
+							<tr>
+								<th>Member</th>
+								<th>Roles</th>
+								<th>Status</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, m := range data.Members {
+								<tr>
+									<td>
+										if m.DisplayName != "" {
+											<div>{ m.DisplayName }</div>
+											<div class="uk-muted">{ m.Email }</div>
+										} else {
+											{ m.Email }
+										}
+									</td>
+									<td>
+										@roleBadges(m.RoleBadges)
+									</td>
+									<td>
+										if m.Active {
+											@uikit.Badge(uikit.BadgeConfig{Variant: uikit.VariantSuccess, Label: "Active"})
+										} else {
+											@uikit.Badge(uikit.BadgeConfig{Variant: uikit.VariantNeutral, Label: "Inactive"})
+										}
+									</td>
+									<td>
+										if data.CanManage {
+											@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Small: true, Attrs: templ.Attributes{"data-uk-modal-open": memberRolesModalID(m.ID)}}) {
+												Assign roles
+											}
+										} else {
+											<span class="uk-muted">—</span>
+										}
+									</td>
+								</tr>
+							}
+						</tbody>
+					}
+				}
+			}
+			if data.CanManage {
+				for _, m := range data.Members {
+					@memberRolesModal(m, data.Roles)
+				}
+			}
+		}
+	}
+}
+
+// roleBadges renders a member's (or team's) roles as pills — accent for a
+// built-in role, neutral for a custom one — or an em dash when none.
+templ roleBadges(badges []RoleBadge) {
+	if len(badges) == 0 {
+		<span class="uk-muted">—</span>
+	} else {
+		for _, b := range badges {
+			if b.Builtin {
+				@uikit.Badge(uikit.BadgeConfig{Variant: uikit.VariantAccent, Label: b.Name})
+			} else {
+				@uikit.Badge(uikit.BadgeConfig{Variant: uikit.VariantNeutral, Label: b.Name})
+			}
+		}
+	}
+}
+
+// memberRolesModal renders the per-member assign-roles dialog: a checklist of the
+// org's roles, pre-checked for the member's current set, posting the full desired
+// set (replace semantics). A member with no assignable roles gets a note instead.
+templ memberRolesModal(m MemberView, roles []RoleOption) {
+	@uikit.Modal(uikit.ModalConfig{ID: memberRolesModalID(m.ID), Title: "Assign roles — " + memberLabel(m)}) {
+		<form method="post" action={ templ.SafeURL(memberRolesPath(m.ID)) }>
+			@uikit.Field(uikit.FieldConfig{Label: "Roles", Help: "Selected roles are assigned directly to this member."}) {
+				if len(roles) == 0 {
+					<p class="uk-muted">No roles available to assign.</p>
+				} else {
+					for _, r := range roles {
+						@uikit.Check(uikit.CheckConfig{Name: "role_ids", Value: r.ID, Label: r.Name, Checked: contains(m.RoleIDs, r.ID)})
+					}
+				}
+			}
+			<div class="uk-modal-footer">
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Attrs: templ.Attributes{"data-uk-modal-close": true}}) {
+					Cancel
+				}
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
+					Save roles
+				}
+			</div>
+		</form>
+	}
+}

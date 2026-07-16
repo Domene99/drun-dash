@@ -1,0 +1,165 @@
+package views
+
+import "github.com/Domene99/drun-dash/internal/uikit"
+
+// Roles renders the role catalog: the built-in roles (immutable, read-only) and
+// any custom roles, each by name + description + permission count + agent-access
+// summary + a type badge. When the caller holds roles.manage the page offers a
+// New-role dialog and per-row Edit/Delete controls for custom roles; built-in
+// roles never get those controls (ADR-0006 §1). Without roles.manage the page
+// shows a view-only notice, since the control plane gates the roles API on it.
+templ Roles(data RolesData) {
+	@Page(data.Chrome) {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       "Roles",
+			Description: "Roles bundle permissions and agent access, then get assigned to members and teams.",
+			Action:      rolesHeaderAction(data),
+		})
+		if data.NoAccess {
+			@uikit.Card(uikit.CardConfig{}) {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantWarning, Title: "View-only"}) {
+					Managing roles requires the roles.manage permission, which your account does not have.
+				}
+			}
+		} else {
+			@uikit.Card(uikit.CardConfig{}) {
+				if data.Error != "" {
+					@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+						{ data.Error }
+					}
+				}
+				if len(data.Roles) == 0 {
+					@uikit.EmptyState(uikit.EmptyStateConfig{
+						Title:   "No roles yet",
+						Message: "Custom roles you create appear here alongside the built-in roles.",
+					})
+				} else {
+					@uikit.Table() {
+						<thead>
+							<tr>
+								<th>Name</th>
+								<th>Description</th>
+								<th class="uk-num">Permissions</th>
+								<th>Agent access</th>
+								<th>Type</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, role := range data.Roles {
+								<tr>
+									<td>{ role.Name }</td>
+									<td>{ orDash(role.Description) }</td>
+									<td class="uk-num">{ role.PermissionCount }</td>
+									<td>{ role.AccessSummary }</td>
+									<td>
+										if role.Builtin {
+											@uikit.Badge(uikit.BadgeConfig{Variant: uikit.VariantAccent, Label: "Built-in"})
+										} else {
+											@uikit.Badge(uikit.BadgeConfig{Variant: uikit.VariantNeutral, Label: "Custom"})
+										}
+									</td>
+									<td>
+										if data.CanManage && !role.Builtin {
+											<div class="uk-row-actions">
+												@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Small: true, Attrs: templ.Attributes{"data-uk-modal-open": roleEditModalID(role.ID)}}) {
+													Edit
+												}
+												@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonDanger, Small: true, Attrs: templ.Attributes{"data-uk-modal-open": roleDeleteModalID(role.ID)}}) {
+													Delete
+												}
+											</div>
+										} else {
+											<span class="uk-muted">—</span>
+										}
+									</td>
+								</tr>
+							}
+						</tbody>
+					}
+				}
+			}
+			if data.CanManage {
+				@uikit.Modal(uikit.ModalConfig{ID: "role-create", Title: "New role"}) {
+					@roleForm("role-create", rolePath, "Create role", RoleView{}, data.Permissions, data.Agents)
+				}
+				for _, role := range data.Roles {
+					if !role.Builtin {
+						@uikit.Modal(uikit.ModalConfig{ID: roleEditModalID(role.ID), Title: "Edit role — " + role.Name}) {
+							@roleForm(roleEditModalID(role.ID), roleUpdatePath(role.ID), "Save changes", role, data.Permissions, data.Agents)
+						}
+						@roleDeleteModal(role)
+					}
+				}
+			}
+		}
+	}
+}
+
+// rolesHeaderAction renders the New-role button, but only when the caller may
+// manage roles; otherwise it renders nothing.
+templ rolesHeaderAction(data RolesData) {
+	if data.CanManage {
+		@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Attrs: templ.Attributes{"data-uk-modal-open": "role-create"}}) {
+			New role
+		}
+	}
+}
+
+// roleForm renders the shared create/edit role form: name, description, a
+// permission checklist, and an agent-access section (an "all agents" toggle plus
+// a per-agent checklist). It posts to action as a full-page form; role carries
+// the current values so the edit form is pre-filled. idPrefix keys the field ids
+// so multiple forms on the page keep distinct labels.
+templ roleForm(idPrefix, action, submitLabel string, role RoleView, perms []PermissionOption, agents []AgentOption) {
+	<form method="post" action={ templ.SafeURL(action) }>
+		@uikit.Field(uikit.FieldConfig{Label: "Name", For: idPrefix + "-name", Required: true}) {
+			@uikit.Input(uikit.InputConfig{ID: idPrefix + "-name", Name: "name", Value: role.Name, Placeholder: "e.g. Release Manager", Attrs: templ.Attributes{"required": true}})
+		}
+		@uikit.Field(uikit.FieldConfig{Label: "Description", For: idPrefix + "-desc"}) {
+			@uikit.Textarea(uikit.TextareaConfig{ID: idPrefix + "-desc", Name: "description", Value: role.Description, Rows: 2, Placeholder: "What this role is for."})
+		}
+		@uikit.Field(uikit.FieldConfig{Label: "Permissions", Help: "Capabilities this role grants across the organization."}) {
+			for _, p := range perms {
+				@uikit.Check(uikit.CheckConfig{Name: "permissions", Value: p.Key, Label: p.Key + " — " + p.Description, Checked: contains(role.PermissionKeys, p.Key)})
+			}
+		}
+		@uikit.Field(uikit.FieldConfig{Label: "Agent access", Help: "Which agents members holding this role may run."}) {
+			@uikit.Check(uikit.CheckConfig{Name: "all_agents", Value: "on", Label: "Grant access to all agents", Checked: role.AllAgents})
+			if len(agents) == 0 {
+				<p class="uk-muted">No agents in the catalog yet.</p>
+			} else {
+				for _, a := range agents {
+					@uikit.Check(uikit.CheckConfig{Name: "agents", Value: a.ID, Label: a.Name, Checked: contains(role.AgentIDs, a.ID)})
+				}
+			}
+		}
+		<div class="uk-modal-footer">
+			@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Attrs: templ.Attributes{"data-uk-modal-close": true}}) {
+				Cancel
+			}
+			@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Type: "submit"}) {
+				{ submitLabel }
+			}
+		</div>
+	</form>
+}
+
+// roleDeleteModal renders the per-row delete confirmation for a custom role. The
+// confirm button is a submit inside a POST form so the deletion runs as a plain
+// full-page navigation (no JavaScript beyond opening the dialog).
+templ roleDeleteModal(role RoleView) {
+	@uikit.Modal(uikit.ModalConfig{ID: roleDeleteModalID(role.ID), Title: "Delete role?"}) {
+		<p>Delete the custom role <strong>{ role.Name }</strong>? Members and teams holding it lose the access it granted. This cannot be undone.</p>
+		<form method="post" action={ templ.SafeURL(roleDeletePath(role.ID)) }>
+			<div class="uk-modal-footer">
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonSecondary, Attrs: templ.Attributes{"data-uk-modal-close": true}}) {
+					Cancel
+				}
+				@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonDanger, Type: "submit"}) {
+					Delete role
+				}
+			</div>
+		</form>
+	}
+}

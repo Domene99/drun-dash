@@ -140,6 +140,22 @@ func (s *Server) routes() chi.Router {
 		r.Post("/approvals/{id}/decision", s.handleApprovalDecision)
 		r.Get("/device", s.handleDevicePage)
 		r.Post("/device", s.handleDeviceSubmit)
+
+		// RBAC governance pages (ADR-0006 §7) and the read-only catalog detail
+		// views. Management POSTs sit behind the same auth-cookie middleware;
+		// the control plane still enforces the per-endpoint permission, this is
+		// the UX layer that also hides actions the caller cannot perform.
+		r.Get("/roles", s.handleRoles)
+		r.Post("/roles", s.handleRoleCreate)
+		r.Post("/roles/{roleId}/update", s.handleRoleUpdate)
+		r.Post("/roles/{roleId}/delete", s.handleRoleDelete)
+		r.Get("/members", s.handleMembers)
+		r.Post("/members/{memberId}/roles", s.handleMemberRoles)
+		r.Get("/teams", s.handleTeams)
+		r.Get("/agents", s.handleAgents)
+		r.Get("/agents/{agentId}", s.handleAgentDetail)
+		r.Get("/policies", s.handlePolicies)
+		r.Get("/policies/{policyId}", s.handlePolicyDetail)
 	})
 
 	return r
@@ -321,7 +337,7 @@ func (s *Server) handleDeviceSubmit(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 
-	chrome, err := s.buildChrome(r.Context(), token, "overview", "Overview")
+	chrome, _, err := s.buildChrome(r.Context(), token, "overview", "Overview")
 	if err != nil {
 		s.redirectToLogin(w, r)
 		return
@@ -363,7 +379,7 @@ func (s *Server) handleSummaryFragment(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 
-	chrome, err := s.buildChrome(r.Context(), token, "sessions", "Sessions")
+	chrome, _, err := s.buildChrome(r.Context(), token, "sessions", "Sessions")
 	if err != nil {
 		s.redirectToLogin(w, r)
 		return
@@ -395,7 +411,7 @@ func (s *Server) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
 
-	chrome, err := s.buildChrome(r.Context(), token, "sessions", "Trajectory")
+	chrome, _, err := s.buildChrome(r.Context(), token, "sessions", "Trajectory")
 	if err != nil {
 		s.redirectToLogin(w, r)
 		return
@@ -426,7 +442,7 @@ func (s *Server) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSpend(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 
-	chrome, err := s.buildChrome(r.Context(), token, "spend", "Spend")
+	chrome, _, err := s.buildChrome(r.Context(), token, "spend", "Spend")
 	if err != nil {
 		s.redirectToLogin(w, r)
 		return
@@ -469,7 +485,7 @@ func (s *Server) handleSpend(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 
-	chrome, err := s.buildChrome(r.Context(), token, "approvals", "Approvals")
+	chrome, _, err := s.buildChrome(r.Context(), token, "approvals", "Approvals")
 	if err != nil {
 		s.redirectToLogin(w, r)
 		return
@@ -524,16 +540,17 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 
 // buildChrome assembles the shell chrome for an authenticated page: the active
 // nav key, the environment indicator, and the signed-in identity (for the
-// top-bar user menu) from GET /auth/whoami. A rejected token returns
-// ErrUnauthorized so the caller can redirect; any other whoami failure is
-// logged and the page still renders (with an empty identity) rather than
-// blanking on a control-plane blip.
-func (s *Server) buildChrome(ctx context.Context, token, active, title string) (views.Chrome, error) {
+// top-bar user menu) from GET /auth/whoami. It also returns the caller's
+// effective permission set so a handler can show or hide management actions. A
+// rejected token returns ErrUnauthorized so the caller can redirect; any other
+// whoami failure is logged and the page still renders (with an empty identity
+// and no permissions) rather than blanking on a control-plane blip.
+func (s *Server) buildChrome(ctx context.Context, token, active, title string) (views.Chrome, []string, error) {
 	chrome := views.Chrome{Title: title, Active: active, Environment: s.environment}
 	id, err := s.client.Whoami(ctx, token)
 	switch {
 	case errors.Is(err, ErrUnauthorized):
-		return views.Chrome{}, err
+		return views.Chrome{}, nil, err
 	case err != nil:
 		s.logger.ErrorContext(ctx, "admin-ui: whoami failed", slog.Any("error", err))
 	default:
@@ -543,8 +560,9 @@ func (s *Server) buildChrome(ctx context.Context, token, active, title string) (
 			Email:          id.Email,
 			Roles:          rolesText(id.Roles),
 		}
+		return chrome, id.Permissions, nil
 	}
-	return chrome, nil
+	return chrome, nil, nil
 }
 
 // buildSummary fetches the Overview's live data: the metric figures (active
