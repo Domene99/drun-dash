@@ -1,0 +1,193 @@
+package views
+
+import "github.com/Domene99/drun-dash/internal/uikit"
+
+// Agents renders the agent catalog list — the entry point into the read-only
+// agent detail views. Each agent is shown by name (linking to its detail),
+// description, latest published version, and creation time.
+templ Agents(data AgentsData) {
+	@Page(data.Chrome) {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       "Agents",
+			Description: "The catalog of governed agents in your organization.",
+		})
+		@uikit.Card(uikit.CardConfig{}) {
+			if data.Error != "" {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+					{ data.Error }
+				}
+			}
+			if len(data.Agents) == 0 {
+				@uikit.EmptyState(uikit.EmptyStateConfig{
+					Title:   "No agents yet",
+					Message: "Agents registered in your organization's catalog will appear here.",
+				})
+			} else {
+				@uikit.Table() {
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Description</th>
+							<th class="uk-num">Latest version</th>
+							<th>Created</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, a := range data.Agents {
+							<tr>
+								<td><a href={ templ.SafeURL(agentDetailPath(a.ID)) }>{ a.Name }</a></td>
+								<td>{ orDash(a.Description) }</td>
+								<td class="uk-num">{ a.LatestVersion }</td>
+								<td>
+									@uikit.RelativeTime(uikit.RelativeTimeConfig{Relative: a.Created.Relative, Absolute: a.Created.Absolute})
+								</td>
+							</tr>
+						}
+					</tbody>
+				}
+			}
+		}
+	}
+}
+
+// AgentDetail renders the read-only detail view for one agent: its metadata
+// (description, latest version, default policy resolved to a NAME where possible,
+// timestamps), its published versions, the roles that grant access to it, and
+// the principals entitled to launch it. Editing arrives in a later batch; the
+// Edit affordance is a disabled placeholder shown only to callers who could
+// manage agents (agents.manage).
+templ AgentDetail(data AgentDetailData) {
+	@Page(data.Chrome) {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       orDash(data.Name),
+			Description: "Agent detail — read only.",
+			Action:      agentDetailActions(data),
+		})
+		if data.Error != "" {
+			@uikit.Card(uikit.CardConfig{}) {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+					{ data.Error }
+				}
+			}
+		} else {
+			@uikit.Card(uikit.CardConfig{Title: "Overview"}) {
+				<p>{ orDash(data.Description) }</p>
+				@detailRow("Agent") {
+					@uikit.IDChip(uikit.IDChipConfig{ID: data.ID, Display: shortID(data.ID)})
+				}
+				@detailRow("Latest version") {
+					{ data.LatestVersion }
+				}
+				@detailRow("Default policy") {
+					if data.DefaultPolicyID != "" {
+						<a href={ templ.SafeURL(policyDetailPath(data.DefaultPolicyID)) }>{ orDash(data.DefaultPolicy) }</a>
+					} else {
+						<span class="uk-muted">—</span>
+					}
+				}
+				@detailRow("Created") {
+					@uikit.RelativeTime(uikit.RelativeTimeConfig{Relative: data.Created.Relative, Absolute: data.Created.Absolute})
+				}
+				@detailRow("Updated") {
+					@uikit.RelativeTime(uikit.RelativeTimeConfig{Relative: data.Updated.Relative, Absolute: data.Updated.Absolute})
+				}
+			}
+			@uikit.Card(uikit.CardConfig{Title: "Versions"}) {
+				if len(data.Versions) == 0 {
+					@uikit.EmptyState(uikit.EmptyStateConfig{
+						Title:   "No published versions",
+						Message: "This agent has no immutable published versions yet.",
+					})
+				} else {
+					@uikit.Table() {
+						<thead>
+							<tr>
+								<th class="uk-num">Version</th>
+								<th>Manifest digest</th>
+								<th>Notes</th>
+								<th>Created</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, v := range data.Versions {
+								<tr>
+									<td class="uk-num">{ v.Version }</td>
+									<td>
+										if v.Digest != "" {
+											@uikit.IDChip(uikit.IDChipConfig{ID: v.Digest, Display: shortID(v.Digest)})
+										} else {
+											<span class="uk-muted">—</span>
+										}
+									</td>
+									<td>{ orDash(v.Notes) }</td>
+									<td>
+										@uikit.RelativeTime(uikit.RelativeTimeConfig{Relative: v.Created.Relative, Absolute: v.Created.Absolute})
+									</td>
+								</tr>
+							}
+						</tbody>
+					}
+				}
+			}
+			@uikit.Card(uikit.CardConfig{Title: "Role access"}) {
+				if data.AccessNote != "" {
+					<p class="uk-muted">{ data.AccessNote }</p>
+				} else if len(data.Access) == 0 {
+					<p class="uk-muted">No role grants access to this agent.</p>
+				} else {
+					@roleBadges(data.Access)
+				}
+			}
+			@uikit.Card(uikit.CardConfig{Title: "Entitlements"}) {
+				if len(data.Entitlements) == 0 {
+					<p class="uk-muted">No direct entitlements.</p>
+				} else {
+					@uikit.Table() {
+						<thead>
+							<tr>
+								<th>Principal</th>
+								<th>ID</th>
+								<th class="uk-num">Max fan-out</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, e := range data.Entitlements {
+								<tr>
+									<td>
+										@uikit.Badge(uikit.BadgeConfig{Variant: uikit.VariantInfo, Label: e.PrincipalType})
+									</td>
+									<td>
+										@uikit.IDChip(uikit.IDChipConfig{ID: e.PrincipalID, Display: shortID(e.PrincipalID)})
+									</td>
+									<td class="uk-num">{ e.MaxFanOut }</td>
+								</tr>
+							}
+						</tbody>
+					}
+				}
+			}
+		}
+	}
+}
+
+// agentDetailActions renders the detail page-header actions: a Back link and,
+// for callers who can manage agents, a disabled Edit placeholder pointing at the
+// next-batch editing surface.
+templ agentDetailActions(data AgentDetailData) {
+	<div class="uk-row-actions">
+		@uikit.ButtonLink(uikit.ButtonLinkConfig{Variant: uikit.ButtonSecondary, Href: "/agents"}) {
+			Back to agents
+		}
+		if data.CanManage {
+			@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonPrimary, Disabled: true, Attrs: templ.Attributes{"title": "Editing agents arrives in a later batch."}}) {
+				Edit
+			}
+		}
+	</div>
+}
+
+// detailRow renders one labelled metadata row (a muted label beside its value)
+// for the read-only detail cards. The value is the component's children.
+templ detailRow(label string) {
+	<p><span class="uk-muted">{ label }: </span>{ children... }</p>
+}

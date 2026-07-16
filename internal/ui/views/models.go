@@ -199,10 +199,9 @@ type DeviceData struct {
 	Approved bool
 }
 
-// navGroups builds the admin sidebar navigation (ADR-0005 §3). The sections
-// that have a page today link; the management sections reserved for later
-// batches (Agents, Policies, Members, Roles, Teams, Audit) render as disabled
-// slots so the IA position is fixed and the nav does not reshuffle later. active
+// navGroups builds the admin sidebar navigation (ADR-0005 §3). Every section
+// links to its page; only Audit remains a disabled slot (reserved for a later
+// batch) so the IA position is fixed and the nav does not reshuffle. active
 // marks the current section.
 func navGroups(active string) []uikit.NavGroup {
 	item := func(key, label, href string, enabled bool) uikit.NavItem {
@@ -218,15 +217,15 @@ func navGroups(active string) []uikit.NavGroup {
 			item("overview", "Overview", "/", true),
 		}},
 		{Label: "Operate", Items: []uikit.NavItem{
-			item("agents", "Agents", "", false),
+			item("agents", "Agents", "/agents", true),
 			item("sessions", "Sessions", "/sessions", true),
 			item("approvals", "Approvals", "/approvals", true),
 		}},
 		{Label: "Govern", Items: []uikit.NavItem{
-			item("policies", "Policies", "", false),
-			item("members", "Members", "", false),
-			item("roles", "Roles", "", false),
-			item("teams", "Teams", "", false),
+			item("policies", "Policies", "/policies", true),
+			item("members", "Members", "/members", true),
+			item("roles", "Roles", "/roles", true),
+			item("teams", "Teams", "/teams", true),
 		}},
 		{Label: "Analyze", Items: []uikit.NavItem{
 			item("spend", "Spend", "/spend", true),

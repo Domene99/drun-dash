@@ -85,12 +85,16 @@ func NewClient(baseURL string, hc *http.Client) *Client {
 
 // --- response schemas, mirroring openapi/v1.yaml ---
 
-// Identity mirrors the Identity schema (GET /auth/whoami).
+// Identity mirrors the Identity schema (GET /auth/whoami). Permissions carries
+// the caller's effective permission set (ADR-0006 §7), resolved by the control
+// plane per request; the admin UI uses it to show or hide the management actions
+// the caller lacks permission for.
 type Identity struct {
 	Subject        string   `json:"subject"`
 	OrganizationID string   `json:"organization_id"`
 	Email          string   `json:"email,omitempty"`
 	Roles          []string `json:"roles"`
+	Permissions    []string `json:"permissions"`
 }
 
 // TokenResponse mirrors the TokenResponse schema (POST /auth/session and the
@@ -105,12 +109,13 @@ type TokenResponse struct {
 // Agent mirrors the Agent schema. LatestVersion is a pointer so "no published
 // version" is distinguishable from version 0.
 type Agent struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Description   string `json:"description,omitempty"`
-	LatestVersion *int   `json:"latest_version,omitempty"`
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at,omitempty"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Description     string `json:"description,omitempty"`
+	DefaultPolicyID string `json:"default_policy_id,omitempty"`
+	LatestVersion   *int   `json:"latest_version,omitempty"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at,omitempty"`
 }
 
 // AgentList mirrors the AgentList schema: a page of agents plus the optional

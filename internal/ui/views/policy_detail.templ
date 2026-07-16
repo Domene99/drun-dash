@@ -1,0 +1,132 @@
+package views
+
+import "github.com/Domene99/drun-dash/internal/uikit"
+
+// Policies renders the policy catalog list — the entry point into the read-only
+// policy detail views. Each policy is shown by name (linking to its detail),
+// description, current version, and creation time.
+templ Policies(data PoliciesData) {
+	@Page(data.Chrome) {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       "Policies",
+			Description: "The policy boundaries that govern agent sessions.",
+		})
+		@uikit.Card(uikit.CardConfig{}) {
+			if data.Error != "" {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+					{ data.Error }
+				}
+			}
+			if len(data.Policies) == 0 {
+				@uikit.EmptyState(uikit.EmptyStateConfig{
+					Title:   "No policies yet",
+					Message: "Policy boundaries defined in your organization will appear here.",
+				})
+			} else {
+				@uikit.Table() {
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Description</th>
+							<th class="uk-num">Current version</th>
+							<th>Created</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, p := range data.Policies {
+							<tr>
+								<td><a href={ templ.SafeURL(policyDetailPath(p.ID)) }>{ p.Name }</a></td>
+								<td>{ orDash(p.Description) }</td>
+								<td class="uk-num">{ p.CurrentVersion }</td>
+								<td>
+									@uikit.RelativeTime(uikit.RelativeTimeConfig{Relative: p.Created.Relative, Absolute: p.Created.Absolute})
+								</td>
+							</tr>
+						}
+					</tbody>
+				}
+			}
+		}
+	}
+}
+
+// PolicyDetail renders the read-only detail view for one policy: its metadata
+// (description, current version, created) and its immutable signed versions, each
+// by version number, content digest (as an ID chip), signing provenance, and
+// creation time.
+templ PolicyDetail(data PolicyDetailData) {
+	@Page(data.Chrome) {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       orDash(data.Name),
+			Description: "Policy detail — read only.",
+			Action:      policyDetailBack(),
+		})
+		if data.Error != "" {
+			@uikit.Card(uikit.CardConfig{}) {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+					{ data.Error }
+				}
+			}
+		} else {
+			@uikit.Card(uikit.CardConfig{Title: "Overview"}) {
+				<p>{ orDash(data.Description) }</p>
+				@detailRow("Policy") {
+					@uikit.IDChip(uikit.IDChipConfig{ID: data.ID, Display: shortID(data.ID)})
+				}
+				@detailRow("Current version") {
+					{ data.CurrentVersion }
+				}
+				@detailRow("Created") {
+					@uikit.RelativeTime(uikit.RelativeTimeConfig{Relative: data.Created.Relative, Absolute: data.Created.Absolute})
+				}
+			}
+			@uikit.Card(uikit.CardConfig{Title: "Versions"}) {
+				if len(data.Versions) == 0 {
+					@uikit.EmptyState(uikit.EmptyStateConfig{
+						Title:   "No versions",
+						Message: "This policy has no published versions yet.",
+					})
+				} else {
+					@uikit.Table() {
+						<thead>
+							<tr>
+								<th class="uk-num">Version</th>
+								<th>Digest</th>
+								<th>Algorithm</th>
+								<th>Key ID</th>
+								<th>Created</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, v := range data.Versions {
+								<tr>
+									<td class="uk-num">{ v.Version }</td>
+									<td>
+										if v.Digest != "" {
+											@uikit.IDChip(uikit.IDChipConfig{ID: v.Digest, Display: shortID(v.Digest)})
+										} else {
+											<span class="uk-muted">—</span>
+										}
+									</td>
+									<td>{ orDash(v.Algorithm) }</td>
+									<td>{ orDash(v.KeyID) }</td>
+									<td>
+										@uikit.RelativeTime(uikit.RelativeTimeConfig{Relative: v.Created.Relative, Absolute: v.Created.Absolute})
+									</td>
+								</tr>
+							}
+						</tbody>
+					}
+				}
+			}
+		}
+	}
+}
+
+// policyDetailBack is the policy-detail page-header action linking back to the
+// policy list.
+templ policyDetailBack() {
+	@uikit.ButtonLink(uikit.ButtonLinkConfig{Variant: uikit.ButtonSecondary, Href: "/policies"}) {
+		Back to policies
+	}
+}

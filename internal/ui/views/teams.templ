@@ -1,0 +1,56 @@
+package views
+
+import "github.com/Domene99/drun-dash/internal/uikit"
+
+// Teams renders the teams page. The control plane exposes no team-management
+// endpoints in this batch, so when data.Available is false the page shows an
+// explanatory read-only notice rather than an empty table (ADR-0006). The table
+// path is kept so enabling a teams endpoint later is a wiring change, not a
+// rewrite.
+templ Teams(data TeamsData) {
+	@Page(data.Chrome) {
+		@uikit.PageHeader(uikit.PageHeaderConfig{
+			Title:       "Teams",
+			Description: "Groups of members that share role assignments.",
+		})
+		@uikit.Card(uikit.CardConfig{}) {
+			if data.Error != "" {
+				@uikit.Alert(uikit.AlertConfig{Variant: uikit.VariantDanger}) {
+					{ data.Error }
+				}
+			}
+			if !data.Available {
+				@uikit.EmptyState(uikit.EmptyStateConfig{
+					Title:   "Team management isn't available yet",
+					Message: "The control plane does not expose team endpoints in this release. Teams and team-level role assignment will appear here once the API supports them.",
+				})
+			} else if len(data.Teams) == 0 {
+				@uikit.EmptyState(uikit.EmptyStateConfig{
+					Title:   "No teams yet",
+					Message: "Teams created in your organization will appear here.",
+				})
+			} else {
+				@uikit.Table() {
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th class="uk-num">Members</th>
+							<th>Roles</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, t := range data.Teams {
+							<tr>
+								<td>{ t.Name }</td>
+								<td class="uk-num">{ t.MemberCount }</td>
+								<td>
+									@roleBadges(t.RoleBadges)
+								</td>
+							</tr>
+						}
+					</tbody>
+				}
+			}
+		}
+	}
+}
