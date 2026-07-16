@@ -2,8 +2,11 @@
 
 The **member console**: a small, server-rendered web app (Go + templ + HTMX) an
 organization member runs on their own workstation. It is the second frontend
-(design §6.3): sign-in, entitled-agent launch, and a **conversational run view**
-where a natural-language directive becomes governed agent actions (ADR-0004).
+(design §6.3): sign-in, entitled-agent launch, and a **chat-first conversational
+run view** where a natural-language directive becomes governed agent actions
+(ADR-0004, ADR-0007). It renders on the shared design system
+[`internal/uikit`](../uikit) (ADR-0005) — the same tokens, shell, and components
+the admin dashboard uses — so the two surfaces cannot drift.
 
 It is a separate binary (`cmd/member-console`) from the control plane and never
 imports control-plane packages — it talks to the control plane over HTTP through
@@ -11,8 +14,9 @@ imports control-plane packages — it talks to the control plane over HTTP throu
 credential. It *also* talks locally to the drun engine via
 [`pkg/drunmcp`](../../pkg/drunmcp) to run agent tool calls in a sandbox on the
 member's machine — private code and its execution never leave the box (residency,
-ADR-0004 §3). It deliberately mirrors `internal/ui` (the admin UI) without
-importing it.
+ADR-0004 §3). The same server is reused verbatim by the web binary
+(`cmd/member-console`) and, per ADR-0007, by the desktop app that wraps it in a
+native webview window.
 
 ## What it does
 
@@ -22,12 +26,16 @@ importing it.
   `GET /login/poll`, which calls `POST /auth/device/token`; on approval the
   minted control-plane session JWT is stored in a secure, HttpOnly cookie and
   HTMX navigates to the home page.
-- **Entitled agents.** `GET /` lists the agents the member may launch (prefers
-  `GET /me/agents`, falls back to `GET /agents`).
+- **Agent picker (chat-first).** `GET /` is the landing surface: the agents the
+  member may launch (prefers `GET /me/agents`, falls back to `GET /agents`),
+  over the prior conversations they can reopen. The experience is "pick an agent
+  and chat," not a bare table.
 - **Launch / terminate.** `POST /sessions` launches the chosen agent
-  (`POST /sessions/launch`); `POST /sessions/{id}/terminate` ends it, revoking
-  the grant and closing the bound drun session. The launch `proxy_token` and
-  `policy_bundle` are held **server-side** and never rendered to the page.
+  (`POST /sessions/launch`) and **drops the member straight into the
+  conversation** (an HTMX `HX-Redirect` to the run view); `POST
+  /sessions/{id}/terminate` ends it, revoking the grant and closing the bound
+  drun session. The launch `proxy_token` and `policy_bundle` are held
+  **server-side** and never rendered to the page.
 - **Conversational run view (ADR-0004 §3–§5).** `GET /sessions/{id}` renders the
   run view for a launched session:
   - **Bind a drun session.** On first entry the console verifies the policy
@@ -83,14 +91,17 @@ importing it.
     **denied/expired/timeout** it feeds a governed denial so the model adapts. A
     proxy `401/403` likewise raises an approval. Admins decide in the admin UI
     (`POST /approvals/{id}/decision`).
-- **Matrix (§6.3).** `GET /matrix` lets the member enter a directive and a scorer
-  and pick N of their entitled agents; `POST /matrix` fans the run across them via
-  `internal/matrix.Run` — the console implements matrix's `ControlPlane`
-  (launch/terminate over the memberui client) and `Runner` (each branch's
-  directive/scorer runs as a governed `agentrun` turn through that branch's proxy
-  grant), mirroring `internal/cli/matrix.go`. It shows the ranked branches (agent,
-  score, status) and the winner, and terminates every launched session at the end.
 - **Health.** `GET /healthz` returns a static `{"status":"ok"}`.
+- **Design-system assets.** `GET /uikit/*` serves the shared `internal/uikit`
+  stylesheet and theme script (content-hashed for cache-busting), so both the web
+  binary and the desktop app render on one design system.
+
+> **No matrix.** The member surface is chat-first, so the matrix fan-out view was
+> removed (ADR-0007 §4): the `/matrix` routes, `matrix.go`, and the matrix
+> templates are gone. The `internal/matrix` engine is **untouched** and still
+> powers the CLI (`internal/cli/matrix.go`); only the member console's view of it
+> was dropped. (Matrix's scorer is numeric, a poor fit for a text-producing model
+> turn — removing it from the member surface resolves that mismatch by removal.)
 
 ### Known limitations
 
@@ -129,12 +140,21 @@ Secure cookies are enabled only in production (HTTPS).
 
 ## Views
 
+The member views compose the shared design system, [`internal/uikit`](../uikit)
+(ADR-0005): `Layout` is the member "minimal" variant of `uikit.Shell` (top bar,
+no admin sidebar — the conversation is the surface), and the pages are built from
+uikit's `Card`, `Table`, `Button`, `Badge`, `Alert`, `EmptyState`, and `IDChip`.
+The only member-specific styling is the small conversation stylesheet in
+`views/styles.go` (transcript bubbles, tool-step chips, the diff/timeline
+panels), layered on uikit's tokens so it themes with the rest — the member app
+adds no design tokens and no bespoke component CSS.
+
 The `*.templ` files under `views/` are the source of truth; the committed
 `*_templ.go` files are generated with `templ generate`. The conversational run
 view (`views/run.go`) and the dynamic run-view panels (`views/console_views.go`
-— checkpoint timeline, diff review, matrix) are the exception: they are authored
-directly as Go `templ.Component`s because they are HTMX fragments (and the SSE
-stream needs string-returning renderers where each step is one `data:` line),
-which templ's component-only output does not express. Edit the `.templ` files and
+— checkpoint timeline, diff review) are the exception: they are authored directly
+as Go `templ.Component`s because they are HTMX fragments (and the SSE stream
+needs string-returning renderers where each step is one `data:` line), which
+templ's component-only output does not express. Edit the `.templ` files and
 regenerate — never hand-edit the generated Go; `run.go` and `console_views.go`
 are hand-authored and edited directly.

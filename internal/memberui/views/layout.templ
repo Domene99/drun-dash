@@ -1,134 +1,53 @@
 // Package views holds the server-rendered templ components for the drun-dash
-// member console: the shared HTML layout, the device-flow login page, and the
-// entitled-agent home page.
+// member console: the shared HTML shell, the device-flow login page, the
+// chat-first agent-picker home page, and the conversational run view.
 //
 // Views are pure presentation. They receive fully-resolved view models (plain
 // strings and slices assembled by internal/memberui) and never call the control
 // plane or import internal/memberui, so the dependency edge runs one way
 // (internal/memberui -> views) and stays cycle-free.
 //
+// The design system is the shared internal/uikit package (ADR-0005): its Head,
+// Shell, TopBar, Card, Table, Button, Badge, Alert, EmptyState, IDChip, and
+// form components are composed here so the member app and the admin dashboard
+// cannot drift. This package adds no design tokens and no bespoke component CSS;
+// the only member-specific styling is the small conversation stylesheet in
+// styles.go, layered on uikit's tokens.
+//
 // The *.templ files are the source of truth; the committed *_templ.go files are
 // generated from them with `templ generate` (see internal/memberui/README.md).
 // Edit the .templ file and regenerate — never hand-edit the generated Go.
 package views
 
-// htmxScriptURL is the CDN location of the HTMX runtime pulled into every page
-// by [Layout]. HTMX powers the login page's approval poller and the home page's
-// launch/terminate section swaps; pinning an exact version keeps behavior
-// reproducible. Swap this for a vendored asset if serving from a CDN is
-// undesirable in your deployment.
-const htmxScriptURL = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"
+import "github.com/Domene99/drun-dash/internal/uikit"
 
-// Layout is the base HTML shell shared by every member-console page. It renders
-// the document head (including the HTMX script and minimal styling) and a top
-// bar, then yields to the caller-supplied body via templ's children mechanism.
-// showNav toggles the signed-in navigation (a Sign out button); the login page
-// passes false.
+// Layout is the base HTML shell shared by every member-console page. It is the
+// member "minimal" variant of the shared design system (ADR-0005 §3): uikit.Head
+// links the content-hashed stylesheet, HTMX, and the theme script (and, via its
+// Extra slot, the member conversation stylesheet); uikit.Shell renders the frame
+// with a top bar and NO admin sidebar — the conversation is the surface. showNav
+// toggles the signed-in top-bar user menu (Sign out); the login page passes
+// false. Page content is supplied by the caller via templ's children.
 templ Layout(title string, showNav bool) {
-	<!DOCTYPE html>
-	<html lang="en">
-		<head>
-			<meta charset="utf-8"/>
-			<meta name="viewport" content="width=device-width, initial-scale=1"/>
-			<title>{ title } · drun-dash member console</title>
-			<script src={ htmxScriptURL } defer></script>
-			<style>
-				:root { color-scheme: light dark; }
-				* { box-sizing: border-box; }
-				body {
-					margin: 0;
-					font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-					line-height: 1.5;
-					background: #f6f7f9;
-					color: #1c2430;
-				}
-				.topnav {
-					display: flex;
-					align-items: center;
-					gap: 1.5rem;
-					padding: 0.75rem 1.5rem;
-					background: #0f1b2d;
-					color: #fff;
-				}
-				.topnav .brand { font-weight: 700; letter-spacing: 0.02em; }
-				.topnav form.logout { margin-left: auto; }
-				.topnav a { color: #cdd7e5; text-decoration: none; font-size: 0.9rem; }
-				.topnav a:hover { color: #fff; }
-				.navlinks { display: flex; gap: 1rem; }
-				.topnav button {
-					background: transparent;
-					border: 1px solid #35506f;
-					color: #cdd7e5;
-					border-radius: 4px;
-					padding: 0.3rem 0.75rem;
-					cursor: pointer;
-				}
-				main { max-width: 60rem; margin: 1.5rem auto; padding: 0 1.5rem; }
-				.card {
-					background: #fff;
-					border: 1px solid #e2e6eb;
-					border-radius: 8px;
-					padding: 1.25rem;
-					margin-bottom: 1.25rem;
-				}
-				h1 { font-size: 1.4rem; margin: 0 0 0.75rem; }
-				h2 { font-size: 1.1rem; margin: 0 0 0.5rem; }
-				.muted { color: #667085; }
-				.error { color: #b42318; font-weight: 600; }
-				.code {
-					font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-					font-size: 1.8rem;
-					font-weight: 700;
-					letter-spacing: 0.15em;
-				}
-				table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
-				th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #eceff3; font-size: 0.9rem; }
-				th { color: #667085; font-weight: 600; }
-				td.num { text-align: right; font-variant-numeric: tabular-nums; }
-				td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
-				button {
-					border: 1px solid #cbd5e1;
-					background: #fff;
-					border-radius: 4px;
-					padding: 0.3rem 0.85rem;
-					cursor: pointer;
-					font-size: 0.85rem;
-				}
-				button.primary { background: #1d4ed8; color: #fff; border: 0; }
-				button.deny { border-color: #f0c2bc; color: #b42318; }
-				.badge { background: #1d4ed8; color: #fff; border-radius: 4px; padding: 0 0.4rem; font-size: 0.7rem; vertical-align: middle; }
-				.ok { color: #067647; font-weight: 600; }
-				.meta { color: #667085; font-size: 0.8rem; }
-				ol.timeline { margin: 0.5rem 0; padding-left: 1.2rem; }
-				ol.timeline li { margin: 0.15rem 0; }
-				pre.diff { background: #0f1b2d; color: #cdd7e5; padding: 0.75rem; border-radius: 6px; overflow: auto; font-size: 0.8rem; max-height: 24rem; white-space: pre; }
-				.actions { margin-top: 0.5rem; display: flex; gap: 0.5rem; }
-				fieldset { border: 1px solid #e2e6eb; border-radius: 6px; margin: 0.5rem 0; }
-				label.agent { display: inline-block; margin: 0.2rem 0.6rem 0.2rem 0; }
-				textarea { width: 100%; font-family: inherit; font-size: 0.9rem; padding: 0.4rem; border: 1px solid #cbd5e1; border-radius: 4px; }
-				.step { padding: 0.15rem 0; font-size: 0.88rem; }
-				.msg { padding: 0.3rem 0.5rem; margin: 0.2rem 0; border-radius: 6px; }
-				.msg.user { background: #eef2ff; }
-				.msg.agent { background: #f6f7f9; }
-				.chat { margin-top: 0.75rem; }
-			</style>
-		</head>
-		<body>
-			<header class="topnav">
-				<span class="brand">drun-dash · member console</span>
-				if showNav {
-					<nav class="navlinks">
-					<a href="/">Home</a>
-					<a href="/matrix">Matrix</a>
-				</nav>
-				<form method="post" action="/logout" class="logout">
-						<button type="submit">Sign out</button>
-					</form>
-				}
-			</header>
-			<main>
-				{ children... }
-			</main>
-		</body>
-	</html>
+	@uikit.Shell(uikit.ShellConfig{
+		Head: uikit.Head(uikit.HeadConfig{Title: title, Extra: memberHead()}),
+		TopBar: uikit.TopBar(uikit.TopBarConfig{
+			OrgName:     "drun-dash",
+			Environment: "member console",
+			UserMenu:    memberUserMenu(showNav),
+		}),
+	}) {
+		{ children... }
+	}
+}
+
+// SignOut renders the top-bar user menu's Sign out control: a POST /logout form
+// styled with the shared ghost button so it sits quietly beside the theme
+// toggle. It is shown only when the member is signed in (see memberUserMenu).
+templ SignOut() {
+	<form method="post" action="/logout">
+		@uikit.Button(uikit.ButtonConfig{Variant: uikit.ButtonGhost, Type: "submit"}) {
+			Sign out
+		}
+	</form>
 }

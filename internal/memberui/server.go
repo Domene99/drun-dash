@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Domene99/drun-dash/internal/memberui/views"
+	"github.com/Domene99/drun-dash/internal/uikit"
 	"github.com/Domene99/drun-dash/pkg/drunmcp"
 )
 
@@ -65,10 +66,13 @@ const tokenCtxKey ctxKey = iota
 // It holds the secret proxy_token so it is never rendered to the page or
 // written to logs; only the non-secret fields reach the view. The policy bundle
 // is held so the run view can verify it fail-closed and derive the tool set
-// before binding the drun engine (ADR-0004 §3).
+// before binding the drun engine (ADR-0004 §3). AgentName is the human agent
+// name captured at launch so session history reads by name, not UUID (ADR-0005
+// §4).
 type launchedSession struct {
 	SessionID    string
 	AgentID      string
+	AgentName    string
 	ProxyBaseURL string
 	proxyToken   string
 	FanOut       int
@@ -257,11 +261,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.router.ServeHTTP(w, r)
 }
 
-// routes builds the chi router. Health and the login endpoints are public; the
-// home page, the session actions, and the run view sit behind requireAuth,
-// which redirects to /login when the session cookie is absent.
+// routes builds the chi router. The shared design-system assets (internal/uikit)
+// and the login endpoints are public; the home page, the session actions, and
+// the run view sit behind requireAuth, which redirects to /login when the
+// session cookie is absent.
 func (s *Server) routes() chi.Router {
 	r := chi.NewRouter()
+
+	// Serve the shared uikit stylesheet + theme script under /uikit/ so both the
+	// web binary and the desktop app render on the same design system (ADR-0005).
+	// The assets are public and content-hashed for cache-busting.
+	r.Handle(uikit.MountPrefix+"*", uikit.Handler())
 
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/login", s.handleLogin)
@@ -280,8 +290,6 @@ func (s *Server) routes() chi.Router {
 		r.Get("/sessions/{sessionId}/diff", s.handleDiff)
 		r.Post("/sessions/{sessionId}/commit", s.handleCommit)
 		r.Post("/sessions/{sessionId}/reject", s.handleReject)
-		r.Get("/matrix", s.handleMatrixView)
-		r.Post("/matrix", s.handleMatrixRun)
 	})
 
 	return r
@@ -405,10 +413,10 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleLaunch launches the chosen agent's governed session, records it (with
-// its secret proxy_token and policy bundle) server-side, and re-renders just the
-// sessions section for HTMX to swap in place. A rejected token asks HTMX to
-// redirect to /login; any other control-plane error is surfaced inside the
-// section.
+// its secret proxy_token and policy bundle) server-side, and drops the member
+// straight into the conversation via HTMX (HX-Redirect to the run view) —
+// chat-first (ADR-0007 §4). A rejected token asks HTMX to redirect to /login;
+// any other control-plane error is surfaced inside the sessions section.
 func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 	token := tokenFromContext(r.Context())
 
@@ -420,6 +428,7 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agentID := strings.TrimSpace(r.PostFormValue("agent_id"))
+	agentName := strings.TrimSpace(r.PostFormValue("agent_name"))
 	if agentID == "" {
 		s.render(w, r, http.StatusBadRequest, views.SessionsSection(views.SessionsData{
 			Sessions: s.sessionRows(),
@@ -445,6 +454,7 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 	s.storeSession(&launchedSession{
 		SessionID:    launch.SessionID,
 		AgentID:      agentID,
+		AgentName:    agentName,
 		ProxyBaseURL: launch.ProxyBaseURL,
 		proxyToken:   launch.ProxyToken,
 		FanOut:       launch.FanOutCeiling,
@@ -452,7 +462,10 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		policyBundle: launch.PolicyBundle,
 	})
 
-	s.render(w, r, http.StatusOK, views.SessionsSection(views.SessionsData{Sessions: s.sessionRows()}))
+	// Chat-first: navigate the whole page straight into the new conversation.
+	// HTMX honors HX-Redirect on a 200; a 3xx would be swapped into the target.
+	w.Header().Set("HX-Redirect", "/sessions/"+launch.SessionID)
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleTerminate terminates a launched session, closes its bound drun session,
@@ -523,7 +536,7 @@ func (s *Server) dropRun(sessionID string) {
 
 // sessionRows snapshots the launched sessions as display rows, ordered by id
 // for stable rendering. The secret proxy_token is deliberately never copied
-// into the view model.
+// into the view model; the agent name is the readable label (ADR-0005 §4).
 func (s *Server) sessionRows() []views.SessionRow {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -531,7 +544,7 @@ func (s *Server) sessionRows() []views.SessionRow {
 	for _, ls := range s.sessions {
 		rows = append(rows, views.SessionRow{
 			ID:           ls.SessionID,
-			Agent:        ls.AgentID,
+			Agent:        sessionAgentLabel(ls),
 			ProxyBaseURL: ls.ProxyBaseURL,
 			FanOut:       strconv.Itoa(ls.FanOut),
 			Expires:      orDash(ls.ExpiresAt),
@@ -539,6 +552,15 @@ func (s *Server) sessionRows() []views.SessionRow {
 	}
 	sortSessionRows(rows)
 	return rows
+}
+
+// sessionAgentLabel returns the readable agent name for a session row, falling
+// back to the agent id when the name was not captured at launch.
+func sessionAgentLabel(ls *launchedSession) string {
+	if strings.TrimSpace(ls.AgentName) != "" {
+		return ls.AgentName
+	}
+	return ls.AgentID
 }
 
 // requireAuth admits a request only when the session cookie is present and

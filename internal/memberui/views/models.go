@@ -61,8 +61,11 @@ type SessionsData struct {
 	Error    string
 }
 
-// SessionRow is one launched session shown on the home page. The secret
-// proxy_token is deliberately absent — it never reaches the view.
+// SessionRow is one launched session shown on the home page as a reopenable
+// conversation. Agent is the human agent name (the readable primary label, per
+// ADR-0005 §4); the raw session UUID (ID) appears only as a copyable ID chip,
+// never as the headline. The secret proxy_token is deliberately absent — it
+// never reaches the view.
 type SessionRow struct {
 	ID           string
 	Agent        string
@@ -84,4 +87,20 @@ func triggerEvery(seconds int) string {
 // escaping the id so an unusual value cannot break out of the path.
 func terminatePath(sessionID string) string {
 	return "/sessions/" + url.PathEscape(sessionID) + "/terminate"
+}
+
+// runPath builds the link target for opening a session's conversation view,
+// escaping the id so an unusual value cannot break out of the path.
+func runPath(sessionID string) string {
+	return "/sessions/" + url.PathEscape(sessionID)
+}
+
+// shortID returns a truncated form of an identifier for the ID chip's visible
+// text (the full value is still copied on click). It keeps the first eight
+// characters, which is enough to disambiguate a session at a glance.
+func shortID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8] + "…"
 }

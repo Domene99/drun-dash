@@ -19,6 +19,7 @@ func storedSession(proxyBaseURL string) *launchedSession {
 	return &launchedSession{
 		SessionID:    "sess-1",
 		AgentID:      "agent-9",
+		AgentName:    "Alpha",
 		ProxyBaseURL: proxyBaseURL,
 		proxyToken:   "dgp_super_secret",
 		FanOut:       2,
@@ -28,21 +29,12 @@ func storedSession(proxyBaseURL string) *launchedSession {
 }
 
 // newRunServer builds a Server with a mock control plane, a fake drun engine,
-// and the run-view seams stubbed for deterministic tests.
+// and the run-view seams stubbed for deterministic tests. It delegates to
+// newRunServerRT so the control plane is served in-memory (no socket bind) and
+// the suite runs inside the network-isolated drun sandbox as well as on a host.
 func newRunServer(t *testing.T, cpHandler http.HandlerFunc, conn drunConn, opts ...Option) *Server {
 	t.Helper()
-	cp := httptest.NewServer(cpHandler)
-	t.Cleanup(cp.Close)
-	client := NewClient(cp.URL, cp.Client())
-	base := []Option{
-		WithModel("test-model"),
-		WithDrunDialer(func(string) drunConn { return conn }),
-		WithBundleVerifier(func(json.RawMessage, time.Time) error { return nil }),
-		WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }),
-		WithEventIDFunc(seqIDs()),
-	}
-	base = append(base, opts...)
-	return New(client, nil, base...)
+	return newRunServerRT(t, cpHandler, conn, opts...)
 }
 
 // authGet issues an authenticated GET against the server.
@@ -152,9 +144,10 @@ func TestTurnStagesDirective(t *testing.T) {
 }
 
 func TestStreamRunsGovernedTurn(t *testing.T) {
-	// Fake governed proxy: first call proposes a tool, second returns the final.
+	// Fake governed proxy (served in-memory): first call proposes a tool, second
+	// returns the final answer.
 	var proxyCalls int
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	proxyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer dgp_super_secret" {
 			t.Errorf("proxy Authorization = %q, want the scoped proxy token", got)
 		}
@@ -165,8 +158,7 @@ func TestStreamRunsGovernedTurn(t *testing.T) {
 			return
 		}
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"all done"}}]}`))
-	}))
-	t.Cleanup(proxy.Close)
+	})
 
 	conn := &fakeDrunConn{
 		tools: []drunmcp.Tool{bashTool()},
@@ -190,8 +182,8 @@ func TestStreamRunsGovernedTurn(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}
 
-	s := newRunServer(t, cp, conn)
-	s.storeSession(storedSession(proxy.URL))
+	s := newRunServer(t, cp, conn, WithProxyHTTPClient(handlerClient(proxyHandler)))
+	s.storeSession(storedSession("http://proxy"))
 
 	authGet(s, "/sessions/sess-1")                                                    // bind
 	authPostForm(s, "/sessions/sess-1/turn", url.Values{"directive": {"list files"}}) // stage

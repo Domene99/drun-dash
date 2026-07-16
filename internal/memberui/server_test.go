@@ -9,15 +9,13 @@ import (
 	"testing"
 )
 
-// newTestServer builds a Server whose control-plane client is routed at a mock
-// server running fn. The Server's own handlers are exercised with
-// httptest.NewRecorder (no socket bind), while the mock control plane binds a
-// port (so these run on a host, not in the network-sandboxed builder).
+// newTestServer builds a Server whose control-plane client is served in-memory
+// by fn (via handlerClient — no socket bind). The Server's own handlers are
+// exercised with httptest.NewRecorder, so the whole test runs inside the
+// network-isolated drun sandbox as well as on a host.
 func newTestServer(t *testing.T, fn http.HandlerFunc) *Server {
 	t.Helper()
-	cp := httptest.NewServer(fn)
-	t.Cleanup(cp.Close)
-	client := NewClient(cp.URL, cp.Client())
+	client := NewClient("http://cp", handlerClient(fn))
 	return New(client, nil)
 }
 
@@ -50,6 +48,21 @@ func TestHealthz(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), `"status":"ok"`) {
 		t.Errorf("body = %q", rr.Body.String())
+	}
+}
+
+func TestUikitAssetsAreServed(t *testing.T) {
+	s := newTestServer(t, func(http.ResponseWriter, *http.Request) {})
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/uikit/uikit.css", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/css") {
+		t.Errorf("Content-Type = %q, want text/css", ct)
+	}
+	if !strings.Contains(rr.Body.String(), "--accent") {
+		t.Errorf("uikit stylesheet not served: %q", rr.Body.String()[:min(80, len(rr.Body.String()))])
 	}
 }
 
@@ -199,8 +212,9 @@ func TestHomeListsEntitledAgents(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "Alpha") || !strings.Contains(body, "Launch") {
-		t.Errorf("home body missing agent/launch: %q", body)
+	// The agent picker shows the agent by name with a chat-first Start action.
+	if !strings.Contains(body, "Alpha") || !strings.Contains(body, "Start chat") {
+		t.Errorf("home body missing agent/start action: %q", body)
 	}
 }
 
@@ -217,20 +231,25 @@ func TestHomeUnauthorizedRedirects(t *testing.T) {
 	}
 }
 
-func TestLaunchStoresSessionAndHidesProxyToken(t *testing.T) {
+func TestLaunchStoresSessionAndDropsIntoChat(t *testing.T) {
 	const secret = "dgp_super_secret"
 	s := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(SessionLaunch{
-			SessionID:     "sess-1",
-			ProxyBaseURL:  "http://proxy:8081",
-			ProxyToken:    secret,
-			FanOutCeiling: 4,
-			ExpiresAt:     "2026-07-11T12:00:00Z",
-		})
+		if strings.HasSuffix(r.URL.Path, "/sessions/launch") {
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(SessionLaunch{
+				SessionID:     "sess-1",
+				ProxyBaseURL:  "http://proxy:8081",
+				ProxyToken:    secret,
+				FanOutCeiling: 4,
+				ExpiresAt:     "2026-07-11T12:00:00Z",
+			})
+			return
+		}
+		// Any other call (e.g. the home page's agent list) returns nothing.
+		_ = json.NewEncoder(w).Encode(AgentList{})
 	})
 
-	form := url.Values{"agent_id": {"agent-9"}}
+	form := url.Values{"agent_id": {"agent-9"}, "agent_name": {"Alpha"}}
 	req := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "tok"})
@@ -240,24 +259,35 @@ func TestLaunchStoresSessionAndHidesProxyToken(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
-	body := rr.Body.String()
-	if !strings.Contains(body, "sess-1") || !strings.Contains(body, "http://proxy:8081") {
-		t.Errorf("launch response missing session details: %q", body)
+	// Chat-first: launching drops the member straight into the conversation.
+	if got := rr.Header().Get("HX-Redirect"); got != "/sessions/sess-1" {
+		t.Errorf("HX-Redirect = %q, want /sessions/sess-1", got)
 	}
-	if strings.Contains(body, secret) {
-		t.Errorf("launch response leaked proxy token: %q", body)
+	if strings.Contains(rr.Body.String(), secret) {
+		t.Errorf("launch response leaked proxy token: %q", rr.Body.String())
 	}
 
-	// The session persists and is shown on the home page, still without the token.
-	if _, ok := s.sessions["sess-1"]; !ok {
+	// The session persists server-side with the readable agent name and without
+	// the secret token.
+	ls, ok := s.sessions["sess-1"]
+	if !ok {
 		t.Fatal("session was not stored server-side")
 	}
+	if ls.AgentName != "Alpha" {
+		t.Errorf("stored agent name = %q, want Alpha", ls.AgentName)
+	}
+
+	// The home page shows the conversation by agent name, still without the token.
 	homeReq := httptest.NewRequest(http.MethodGet, "/", nil)
 	homeReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "tok"})
 	homeRR := httptest.NewRecorder()
 	s.ServeHTTP(homeRR, homeReq)
-	if hb := homeRR.Body.String(); strings.Contains(hb, secret) {
+	hb := homeRR.Body.String()
+	if strings.Contains(hb, secret) {
 		t.Errorf("home page leaked proxy token: %q", hb)
+	}
+	if !strings.Contains(hb, "Alpha") {
+		t.Errorf("home page should show the conversation by agent name: %q", hb)
 	}
 }
 
@@ -280,7 +310,7 @@ func TestTerminateRemovesSession(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(Session{SessionID: "sess-1", Status: "terminated"})
 	})
 	// Seed a launched session directly.
-	s.storeSession(&launchedSession{SessionID: "sess-1", AgentID: "agent-9", ProxyBaseURL: "http://proxy", proxyToken: "secret", FanOut: 4})
+	s.storeSession(&launchedSession{SessionID: "sess-1", AgentID: "agent-9", AgentName: "Alpha", ProxyBaseURL: "http://proxy", proxyToken: "secret", FanOut: 4})
 
 	req := httptest.NewRequest(http.MethodPost, "/sessions/sess-1/terminate", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "tok"})
@@ -293,7 +323,7 @@ func TestTerminateRemovesSession(t *testing.T) {
 	if _, ok := s.sessions["sess-1"]; ok {
 		t.Error("session should have been dropped after terminate")
 	}
-	if !strings.Contains(rr.Body.String(), "No active sessions") {
+	if !strings.Contains(rr.Body.String(), "No conversations yet") {
 		t.Errorf("expected empty sessions section: %q", rr.Body.String())
 	}
 }
