@@ -1,6 +1,9 @@
 package drunmcp
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // This file provides typed helpers for the drun-mcp session lifecycle tools
 // that the drun-dash CLI relies on. Each helper wraps CallTool with the exact
@@ -182,6 +185,40 @@ func (c *Client) SessionReadFile(ctx context.Context, sessionID, path string) (s
 		return "", err
 	}
 	return res.Text(), nil
+}
+
+// sessionExportPayload is the shape session_export returns: the keys it exported
+// (each prefixed with output_dir) and that output directory.
+type sessionExportPayload struct {
+	ExportedFiles []string `json:"exported_files"`
+	OutputDir     string   `json:"output_dir"`
+}
+
+// SessionExport surfaces the session's sandbox-generated files — those created
+// inside the sandbox with no host origin — and returns their workspace-relative
+// keys (e.g. "hello.py", "src/foo.py"). It is the companion to SessionCommit:
+// commit writes back only *modified mounted* files, so newly created files are
+// invisible to it. The console uses these keys to read each new file and persist
+// it into the member's working directory. The tool also writes the files under a
+// drun-export dir as a side effect; callers that read via SessionReadFile can
+// ignore that location.
+func (c *Client) SessionExport(ctx context.Context, sessionID string) ([]string, error) {
+	res, err := ensureOK(c.CallTool(ctx, "session_export", map[string]any{
+		"session_id": sessionID,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	var out sessionExportPayload
+	if err := res.Decode(&out); err != nil {
+		return nil, err
+	}
+	prefix := strings.TrimSuffix(out.OutputDir, "/") + "/"
+	keys := make([]string, 0, len(out.ExportedFiles))
+	for _, f := range out.ExportedFiles {
+		keys = append(keys, strings.TrimPrefix(f, prefix))
+	}
+	return keys, nil
 }
 
 // SessionWriteFile creates or overwrites the file at path with content,

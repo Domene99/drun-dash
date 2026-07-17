@@ -185,6 +185,10 @@ func run() error {
 	defer w.Destroy()
 	w.SetTitle(windowTitle)
 	w.SetSize(windowWidth, windowHeight, webview.HintNone)
+	// Install the native Edit menu so Cmd+C/V/X/A and select-and-copy work in
+	// the window (webview_go installs no menu bar of its own). Runs on the main
+	// thread, after the webview created the shared NSApplication.
+	installNativeEditMenu()
 	w.Navigate(url)
 	w.Run()
 

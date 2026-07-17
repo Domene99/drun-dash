@@ -40,6 +40,13 @@ type drunConn interface {
 	SessionTree(ctx context.Context, sessionID string) (*drunmcp.CallToolResult, error)
 	SessionDiff(ctx context.Context, sessionID string, from, to drunmcp.CheckpointRef) (string, error)
 	SessionCommit(ctx context.Context, sessionID string, keys ...string) (*drunmcp.CallToolResult, error)
+	// SessionExport lists the session's newly-created (no host origin) files by
+	// workspace-relative key, and SessionReadFile reads one back. session_commit
+	// writes back only modified mounted files, so the console uses these to
+	// persist files the agent *created* into the member's working directory
+	// (issue #296 follow-up).
+	SessionExport(ctx context.Context, sessionID string) ([]string, error)
+	SessionReadFile(ctx context.Context, sessionID, path string) (string, error)
 }
 
 // drunDialer opens a [drunConn] at endpoint. The default dials a real
