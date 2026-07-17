@@ -481,6 +481,13 @@ func TestPublishPolicyVersion(t *testing.T) {
 	if resp.PolicyID != "p7" || resp.Version != 4 || resp.Digest != wantHash {
 		t.Errorf("resp = %+v, want policy_id p7 version 4 digest %s", resp, wantHash)
 	}
+	// The version id must be returned — the admin UI pins a policy onto an agent
+	// by this id (agent_versions.policy_version_id). Omitting it silently drops
+	// the policy selection and the agent can't launch ("no effective policy
+	// version").
+	if resp.ID != "pv-p7" {
+		t.Errorf("resp.id = %q, want the version id used to pin a policy onto an agent", resp.ID)
+	}
 	if len(resp.Signing) == 0 || string(resp.Signing) == "null" {
 		t.Errorf("resp.signing = %s, want the signing object", resp.Signing)
 	}

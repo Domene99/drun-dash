@@ -114,6 +114,7 @@ type apiPolicyCreate struct {
 // signing is the stored signing_json — null for the unsigned version 1 created
 // alongside a policy, an object for every published version.
 type apiPolicyVersion struct {
+	ID        string          `json:"id"`
 	PolicyID  string          `json:"policy_id"`
 	Version   int             `json:"version"`
 	Digest    string          `json:"digest"`
@@ -166,6 +167,7 @@ func toAPIPolicy(p store.Policy) apiPolicy {
 // signing_json (the unsigned version 1) renders as JSON null.
 func toAPIPolicyVersion(v store.PolicyVersion) apiPolicyVersion {
 	return apiPolicyVersion{
+		ID:        v.ID,
 		PolicyID:  v.PolicyID,
 		Version:   v.Version,
 		Digest:    v.ContentHash,
