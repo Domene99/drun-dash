@@ -1896,8 +1896,11 @@ components:
 
     PolicyVersion:
       type: object
-      required: [policy_id, version, digest, signing, created_at]
+      required: [id, policy_id, version, digest, signing, created_at]
       properties:
+        id:
+          $ref: '#/components/schemas/Id'
+          description: Stable identifier used to pin this version onto an agent.
         policy_id:
           $ref: '#/components/schemas/Id'
         version:
