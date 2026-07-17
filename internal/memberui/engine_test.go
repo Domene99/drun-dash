@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -38,12 +40,12 @@ type fakeDrunConn struct {
 	committed   bool
 	commitKeys  []string
 
-	// New-file write-back stubs: exportKeys are the sandbox-created files
-	// SessionExport returns; readFiles maps a key to its content for
-	// SessionReadFile.
-	exportKeys []string
-	exportErr  error
-	readFiles  map[string]string
+	// New-file export stub: exportFiles (name→content) are the sandbox-created
+	// files SessionExport simulates drun writing into the requested output_dir;
+	// exportOutputDir records the output_dir it was called with.
+	exportFiles     map[string]string
+	exportErr       error
+	exportOutputDir string
 }
 
 type fakeToolCall struct {
@@ -121,15 +123,24 @@ func (f *fakeDrunConn) SessionCommit(_ context.Context, _ string, keys ...string
 	return textResult("committed"), nil
 }
 
-func (f *fakeDrunConn) SessionExport(context.Context, string) ([]string, error) {
+func (f *fakeDrunConn) SessionExport(_ context.Context, _, outputDir string) ([]string, error) {
 	if f.exportErr != nil {
 		return nil, f.exportErr
 	}
-	return f.exportKeys, nil
-}
-
-func (f *fakeDrunConn) SessionReadFile(_ context.Context, _, path string) (string, error) {
-	return f.readFiles[path], nil
+	f.exportOutputDir = outputDir
+	// Simulate drun writing the exported files into output_dir.
+	written := make([]string, 0, len(f.exportFiles))
+	for name, content := range f.exportFiles {
+		dest := filepath.Join(outputDir, name)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return written, err
+		}
+		if err := os.WriteFile(dest, []byte(content), 0o644); err != nil {
+			return written, err
+		}
+		written = append(written, dest)
+	}
+	return written, nil
 }
 
 // bashTool is a representative drun tool whose schema requires session_id.

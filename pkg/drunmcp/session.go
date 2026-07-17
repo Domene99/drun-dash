@@ -1,9 +1,6 @@
 package drunmcp
 
-import (
-	"context"
-	"strings"
-)
+import "context"
 
 // This file provides typed helpers for the drun-mcp session lifecycle tools
 // that the drun-dash CLI relies on. Each helper wraps CallTool with the exact
@@ -187,25 +184,27 @@ func (c *Client) SessionReadFile(ctx context.Context, sessionID, path string) (s
 	return res.Text(), nil
 }
 
-// sessionExportPayload is the shape session_export returns: the keys it exported
-// (each prefixed with output_dir) and that output directory.
+// sessionExportPayload is the shape session_export returns: the host paths it
+// wrote and the output directory it wrote them under.
 type sessionExportPayload struct {
 	ExportedFiles []string `json:"exported_files"`
 	OutputDir     string   `json:"output_dir"`
 }
 
-// SessionExport surfaces the session's sandbox-generated files — those created
-// inside the sandbox with no host origin — and returns their workspace-relative
-// keys (e.g. "hello.py", "src/foo.py"). It is the companion to SessionCommit:
-// commit writes back only *modified mounted* files, so newly created files are
-// invisible to it. The console uses these keys to read each new file and persist
-// it into the member's working directory. The tool also writes the files under a
-// drun-export dir as a side effect; callers that read via SessionReadFile can
-// ignore that location.
-func (c *Client) SessionExport(ctx context.Context, sessionID string) ([]string, error) {
-	res, err := ensureOK(c.CallTool(ctx, "session_export", map[string]any{
-		"session_id": sessionID,
-	}))
+// SessionExport writes the session's sandbox-generated files — those created
+// inside the sandbox with no host origin — to outputDir on the host, and returns
+// the paths it wrote. It is the companion to SessionCommit: commit writes back
+// only *modified mounted* files, so newly created files are invisible to it and
+// need export. outputDir must be under the engine's configured export_root
+// (drun rejects other targets with export_denied); pass "" to use the engine's
+// default export directory. With outputDir set, files land directly in it (e.g.
+// outputDir/hello.py), so the whole host write is performed by drun.
+func (c *Client) SessionExport(ctx context.Context, sessionID, outputDir string) ([]string, error) {
+	args := map[string]any{"session_id": sessionID}
+	if outputDir != "" {
+		args["output_dir"] = outputDir
+	}
+	res, err := ensureOK(c.CallTool(ctx, "session_export", args))
 	if err != nil {
 		return nil, err
 	}
@@ -213,12 +212,7 @@ func (c *Client) SessionExport(ctx context.Context, sessionID string) ([]string,
 	if err := res.Decode(&out); err != nil {
 		return nil, err
 	}
-	prefix := strings.TrimSuffix(out.OutputDir, "/") + "/"
-	keys := make([]string, 0, len(out.ExportedFiles))
-	for _, f := range out.ExportedFiles {
-		keys = append(keys, strings.TrimPrefix(f, prefix))
-	}
-	return keys, nil
+	return out.ExportedFiles, nil
 }
 
 // SessionWriteFile creates or overwrites the file at path with content,

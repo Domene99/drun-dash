@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -101,69 +99,28 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	// session_commit writes back only *modified mounted* files. Files the agent
 	// *created* have no host origin, so commit skips them — the cause of "I
 	// created a file but it never appeared in my folder". When the session was
-	// launched with a working directory, collect those new files (while we hold
-	// the sequential conn lock) so we can persist them into that folder below.
-	// Reads happen under the lock; the host writes happen after we release it.
-	var newFiles map[string]string
+	// launched with a working directory, export those new files straight into it
+	// via drun (session_export): drun performs the host write, so the whole
+	// commit — edits and new files — goes through drun tools, gated by the same
+	// explicit Commit + diff review (design §6.3). Requires the engine's
+	// export_root to cover the working dir, else drun returns export_denied.
+	var exported []string
+	var exportErr error
 	if dir := strings.TrimSpace(ls.WorkingDir); dir != "" {
-		keys, exErr := engine.conn.SessionExport(r.Context(), engine.sessionID)
-		if exErr != nil {
-			s.logger.ErrorContext(r.Context(), "member-console: session export",
-				slog.String("session_id", sessionID), slog.Any("error", exErr))
-		} else {
-			newFiles = make(map[string]string, len(keys))
-			for _, key := range keys {
-				content, rdErr := engine.conn.SessionReadFile(r.Context(), engine.sessionID, key)
-				if rdErr != nil {
-					s.logger.ErrorContext(r.Context(), "member-console: read new file",
-						slog.String("session_id", sessionID), slog.String("file", key), slog.Any("error", rdErr))
-					continue
-				}
-				newFiles[key] = content
-			}
-		}
+		exported, exportErr = engine.conn.SessionExport(r.Context(), engine.sessionID, dir)
 	}
 	run.mu.Unlock()
 
 	detail := strings.TrimSpace(res.Text())
-
-	// Persist the agent-created files into the member's working directory
-	// (host-side). This is gated by the same explicit Commit action and prior
-	// diff review as session_commit, so nothing reaches host files un-reviewed
-	// (design §6.3). A write failure is surfaced but does not undo the commit.
-	if len(newFiles) > 0 {
-		written, writeErr := persistNewFiles(ls.WorkingDir, newFiles)
-		if writeErr != nil {
-			s.logger.ErrorContext(r.Context(), "member-console: persist new files",
-				slog.String("session_id", sessionID), slog.Any("error", writeErr))
-			detail = strings.TrimSpace(detail + fmt.Sprintf("\nWrote %d of %d new file(s) to %s before an error occurred.", written, len(newFiles), ls.WorkingDir))
-		} else if written > 0 {
-			detail = strings.TrimSpace(detail + fmt.Sprintf("\nWrote %d new file(s) to %s.", written, ls.WorkingDir))
-		}
+	if exportErr != nil {
+		s.logger.ErrorContext(r.Context(), "member-console: session export",
+			slog.String("session_id", sessionID), slog.Any("error", exportErr))
+		detail = strings.TrimSpace(detail + fmt.Sprintf("\nEdited files were committed, but newly created files could not be written to %s (the drun engine's export_root must cover this folder).", ls.WorkingDir))
+	} else if len(exported) > 0 {
+		detail = strings.TrimSpace(detail + fmt.Sprintf("\nWrote %d new file(s) to %s.", len(exported), ls.WorkingDir))
 	}
 
 	s.render(w, r, http.StatusOK, views.CommitResult(views.CommitData{SessionID: sessionID, Committed: true, Detail: detail}))
-}
-
-// persistNewFiles writes the agent-created files (workspace-relative key →
-// content) into workingDir on the host. Each key is cleaned against directory
-// traversal (a leading "/" neutralizes any "../" so a file can never escape the
-// chosen folder), parent directories are created, and existing files are
-// overwritten. Returns the number written.
-func persistNewFiles(workingDir string, files map[string]string) (int, error) {
-	written := 0
-	for key, content := range files {
-		rel := filepath.Clean("/" + key) // neutralize any "../" escape
-		dest := filepath.Join(workingDir, rel)
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			return written, err
-		}
-		if err := os.WriteFile(dest, []byte(content), 0o644); err != nil {
-			return written, err
-		}
-		written++
-	}
-	return written, nil
 }
 
 // handleReject records the member's rejection of the pending diff. It commits

@@ -58,20 +58,18 @@ func TestCommitOnlyOnExplicitMemberApproval(t *testing.T) {
 	}
 }
 
-// TestCommitPersistsNewFilesToWorkingDir covers the issue-#296 follow-up: files
-// the agent *created* (which session_commit does not write back) are persisted
-// into the member's working directory on commit, including nested paths, while a
-// traversal key can never escape that directory.
-func TestCommitPersistsNewFilesToWorkingDir(t *testing.T) {
+// TestCommitExportsNewFilesToWorkingDir covers the issue-#296 follow-up: on
+// commit, files the agent *created* (which session_commit does not write back)
+// are exported through drun (session_export) into the member's working
+// directory, with the working dir passed as the export output_dir.
+func TestCommitExportsNewFilesToWorkingDir(t *testing.T) {
 	dir := t.TempDir()
 	conn := &fakeDrunConn{
-		tools:      []drunmcp.Tool{bashTool()},
-		diffText:   "--- a/hello.py\n+++ b/hello.py\n@@ -0,0 +1 @@\n+print(\"hi\")",
-		exportKeys: []string{"hello.py", "src/util.py", "../escape.txt"},
-		readFiles: map[string]string{
-			"hello.py":      "print(\"hi\")\n",
-			"src/util.py":   "x = 1\n",
-			"../escape.txt": "should not escape\n",
+		tools:    []drunmcp.Tool{bashTool()},
+		diffText: "--- a/hello.py\n+++ b/hello.py\n@@ -0,0 +1 @@\n+print(\"hi\")",
+		exportFiles: map[string]string{
+			"hello.py":    "print(\"hi\")\n",
+			"src/util.py": "x = 1\n",
 		},
 	}
 	s := newRunServerRT(t, func(http.ResponseWriter, *http.Request) {}, conn)
@@ -87,22 +85,45 @@ func TestCommitPersistsNewFilesToWorkingDir(t *testing.T) {
 	if !conn.committed {
 		t.Error("session_commit must still run for modified mounted files")
 	}
-	// New files land in the working directory, nested paths preserved.
+	// The working dir is passed as the export output_dir (drun does the write).
+	if conn.exportOutputDir != dir {
+		t.Errorf("session_export output_dir = %q, want the working dir %q", conn.exportOutputDir, dir)
+	}
+	// The exported new files (nested paths preserved) land in the working dir.
 	for rel, want := range map[string]string{
 		"hello.py":    "print(\"hi\")\n",
 		"src/util.py": "x = 1\n",
 	} {
 		got, err := os.ReadFile(filepath.Join(dir, rel))
 		if err != nil {
-			t.Fatalf("new file %q not written to working dir: %v", rel, err)
+			t.Fatalf("new file %q not exported into working dir: %v", rel, err)
 		}
 		if string(got) != want {
 			t.Errorf("%q = %q, want %q", rel, got, want)
 		}
 	}
-	// The traversal key is neutralized: nothing is written outside the dir.
-	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "escape.txt")); err == nil {
-		t.Error("a ../ export key escaped the working directory")
+	if !strings.Contains(rr.Body.String(), "new file") {
+		t.Errorf("commit result should report the new files: %q", rr.Body.String())
+	}
+}
+
+// TestCommitWithoutWorkingDirDoesNotExport confirms a scratch session (no working
+// directory) commits edits but never calls session_export.
+func TestCommitWithoutWorkingDirDoesNotExport(t *testing.T) {
+	conn := &fakeDrunConn{tools: []drunmcp.Tool{bashTool()}, diffText: "--- a/x\n+++ b/x\n+change"}
+	s := newRunServerRT(t, func(http.ResponseWriter, *http.Request) {}, conn)
+	s.storeSession(storedSession("http://proxy")) // no WorkingDir
+	authGet(s, "/sessions/sess-1")
+
+	rr := authPostForm(s, "/sessions/sess-1/commit", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if !conn.committed {
+		t.Error("session_commit must run")
+	}
+	if conn.exportOutputDir != "" {
+		t.Errorf("no working dir → session_export must not be called; got output_dir %q", conn.exportOutputDir)
 	}
 }
 
