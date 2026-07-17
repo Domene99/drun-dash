@@ -37,6 +37,13 @@ type fakeDrunConn struct {
 	commitErr   error
 	committed   bool
 	commitKeys  []string
+
+	// New-file write-back stubs: exportKeys are the sandbox-created files
+	// SessionExport returns; readFiles maps a key to its content for
+	// SessionReadFile.
+	exportKeys []string
+	exportErr  error
+	readFiles  map[string]string
 }
 
 type fakeToolCall struct {
@@ -112,6 +119,17 @@ func (f *fakeDrunConn) SessionCommit(_ context.Context, _ string, keys ...string
 	f.committed = true
 	f.commitKeys = keys
 	return textResult("committed"), nil
+}
+
+func (f *fakeDrunConn) SessionExport(context.Context, string) ([]string, error) {
+	if f.exportErr != nil {
+		return nil, f.exportErr
+	}
+	return f.exportKeys, nil
+}
+
+func (f *fakeDrunConn) SessionReadFile(_ context.Context, _, path string) (string, error) {
+	return f.readFiles[path], nil
 }
 
 // bashTool is a representative drun tool whose schema requires session_id.
